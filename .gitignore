@@ -69,3 +69,6 @@ Thumbs.db
 # Local configuration
 .env
 .env.local
+
+# Claude Code
+.claude/
