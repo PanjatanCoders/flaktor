@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(venvScriptspython.exe -m flaktor --help)",
-      "Bash(G:)",
-      "Bash(python \"G:\\\\AutomationProjects\\\\flaktor\\\\venv\\\\Scripts\\\\python.exe\" -c \"from flaktor.models import TestRun, TestResult, TestStatus; print\\(''Import successful!''\\)\")"
-    ]
-  }
-}
