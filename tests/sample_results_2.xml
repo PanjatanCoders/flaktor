@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="Sample Test Suite" tests="10" failures="1" errors="0" skipped="1" time="4.8">
+    <testsuite name="tests.test_auth" tests="4" failures="0" errors="0" skipped="0" time="1.9" timestamp="2026-01-15T11:00:00">
+        <testcase name="test_login_success" classname="tests.test_auth.TestAuth" time="0.45"/>
+        <testcase name="test_login_invalid_password" classname="tests.test_auth.TestAuth" time="0.28"/>
+        <testcase name="test_logout" classname="tests.test_auth.TestAuth" time="0.22"/>
+        <!-- This one passed this time - making it flaky! -->
+        <testcase name="test_session_timeout" classname="tests.test_auth.TestAuth" time="0.95"/>
+    </testsuite>
+    <testsuite name="tests.test_api" tests="3" failures="1" errors="0" skipped="0" time="1.7" timestamp="2026-01-15T11:00:02">
+        <testcase name="test_get_users" classname="tests.test_api.TestAPI" time="0.75"/>
+        <!-- Still failing - consistent failure, not flaky -->
+        <testcase name="test_create_user" classname="tests.test_api.TestAPI" time="0.55">
+            <failure message="HTTPError: 500 Server Error" type="HTTPError">
+Server error persists
+            </failure>
+        </testcase>
+        <testcase name="test_delete_user" classname="tests.test_api.TestAPI" time="0.4"/>
+    </testsuite>
+    <testsuite name="tests.test_database" tests="3" failures="0" errors="0" skipped="1" time="1.2" timestamp="2026-01-15T11:00:04">
+        <testcase name="test_connection" classname="tests.test_database.TestDB" time="0.2"/>
+        <!-- This one passed - making it flaky! -->
+        <testcase name="test_query_timeout" classname="tests.test_database.TestDB" time="0.9"/>
+        <testcase name="test_migration" classname="tests.test_database.TestDB" time="0.1">
+            <skipped message="Migration not ready for testing"/>
+        </testcase>
+    </testsuite>
+</testsuites>
