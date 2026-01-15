@@ -1,0 +1,138 @@
+# Flaktor - Track test results for flaky test detection
+# GitLab CI/CD Pipeline Example
+#
+# Usage:
+#   1. Copy this file to your repository root as .gitlab-ci.yml
+#   2. Adjust the test command and paths for your project
+#   3. The pipeline tracks test results across runs to detect flaky tests
+
+stages:
+  - test
+  - analyze
+  - report
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  FLAKTOR_DB: "$CI_PROJECT_DIR/.flaktor/flaktor.db"
+
+# Cache pip dependencies and Flaktor database
+cache:
+  key: "${CI_PROJECT_PATH}"
+  paths:
+    - .cache/pip
+    - .flaktor/
+
+# ------------------------------------------------------------------------------
+# Test Stage - Run tests and upload results to Flaktor
+# ------------------------------------------------------------------------------
+
+test:
+  stage: test
+  image: python:3.11-slim
+  before_script:
+    - pip install --upgrade pip
+    - pip install -r requirements.txt
+    - pip install pytest pytest-cov flaktor
+    - flaktor init
+  script:
+    # Run tests with JUnit XML output
+    - |
+      pytest \
+        --junitxml=test-results/results.xml \
+        --tb=short \
+        -v \
+        tests/ || TEST_EXIT_CODE=$?
+
+    # Upload results to Flaktor (even if tests failed)
+    - |
+      flaktor upload test-results/results.xml \
+        --branch "$CI_COMMIT_REF_NAME" \
+        --commit "$CI_COMMIT_SHA" \
+        --env "gitlab-ci"
+
+    # Exit with test result
+    - exit ${TEST_EXIT_CODE:-0}
+  artifacts:
+    when: always
+    paths:
+      - test-results/
+    reports:
+      junit: test-results/results.xml
+    expire_in: 30 days
+
+# ------------------------------------------------------------------------------
+# Analyze Stage - Check for flaky tests
+# ------------------------------------------------------------------------------
+
+flaky-check:
+  stage: analyze
+  image: python:3.11-slim
+  needs:
+    - test
+  before_script:
+    - pip install flaktor
+  script:
+    - |
+      echo "Checking for flaky tests..."
+      flaktor list --flaky --days 7 || true
+
+    # Fail the job if there are flaky tests (optional - remove if you just want warnings)
+    # - |
+    #   FLAKY_COUNT=$(flaktor list --flaky --days 7 2>/dev/null | grep -c "%" || echo "0")
+    #   if [ "$FLAKY_COUNT" -gt "0" ]; then
+    #     echo "WARNING: $FLAKY_COUNT flaky tests detected!"
+    #     exit 1
+    #   fi
+  allow_failure: true  # Don't block the pipeline on flaky tests
+
+# ------------------------------------------------------------------------------
+# Report Stage - Generate weekly reports (scheduled)
+# ------------------------------------------------------------------------------
+
+weekly-report:
+  stage: report
+  image: python:3.11-slim
+  rules:
+    # Run on schedule or manual trigger
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
+  before_script:
+    - pip install flaktor
+  script:
+    - |
+      echo "Generating Flaktor report..."
+      flaktor report --days 30 --output flaktor-report.txt
+
+    - |
+      echo "===== FLAKTOR WEEKLY REPORT ====="
+      cat flaktor-report.txt
+      echo "================================="
+
+    - |
+      echo "Top flaky tests (last 7 days):"
+      flaktor list --flaky --days 7 --limit 10 || echo "No flaky tests detected"
+  artifacts:
+    paths:
+      - flaktor-report.txt
+    expire_in: 90 days
+
+# ------------------------------------------------------------------------------
+# Database Cleanup (monthly)
+# ------------------------------------------------------------------------------
+
+cleanup:
+  stage: report
+  image: python:3.11-slim
+  rules:
+    # Run monthly or on manual trigger
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CLEANUP_ENABLED == "true"
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
+  before_script:
+    - pip install flaktor
+  script:
+    - |
+      echo "Cleaning up old test data..."
+      flaktor clean --days 90 --force
+      flaktor info

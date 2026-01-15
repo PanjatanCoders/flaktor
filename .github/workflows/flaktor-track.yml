@@ -1,0 +1,112 @@
+# Flaktor - Track test results for flaky test detection
+# This workflow uploads test results to Flaktor after your test suite runs.
+#
+# Usage:
+#   1. Add this workflow to your repository at .github/workflows/flaktor-track.yml
+#   2. Adjust the test command and results path for your project
+#   3. The workflow tracks test results across runs to detect flaky tests
+
+name: Track Tests with Flaktor
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test-and-track:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # Install your project dependencies
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+
+      # Install Flaktor
+      - name: Install Flaktor
+        run: pip install flaktor
+
+      # Initialize Flaktor database (uses cache for persistence)
+      - name: Restore Flaktor database
+        uses: actions/cache@v4
+        with:
+          path: .flaktor
+          key: flaktor-db-${{ github.repository }}
+          restore-keys: |
+            flaktor-db-
+
+      - name: Initialize Flaktor
+        run: flaktor init
+
+      # Run your tests with JUnit XML output
+      - name: Run tests
+        run: |
+          pytest \
+            --junitxml=test-results/results.xml \
+            --tb=short \
+            -v \
+            tests/
+        continue-on-error: true  # Continue to upload results even if tests fail
+
+      # Upload results to Flaktor
+      - name: Upload test results to Flaktor
+        if: always()  # Run even if tests fail
+        run: |
+          flaktor upload test-results/results.xml \
+            --branch "${{ github.ref_name }}" \
+            --commit "${{ github.sha }}" \
+            --env "github-actions"
+
+      # Check for flaky tests
+      - name: Check for flaky tests
+        if: always()
+        run: |
+          echo "## Flaky Test Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Get flaky tests and format for GitHub summary
+          FLAKY_OUTPUT=$(flaktor list --flaky --days 7 2>/dev/null || echo "No flaky tests detected")
+
+          if [[ "$FLAKY_OUTPUT" == *"No flaky tests"* ]]; then
+            echo ":white_check_mark: No flaky tests detected in the last 7 days" >> $GITHUB_STEP_SUMMARY
+          else
+            echo ":warning: Flaky tests detected:" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "$FLAKY_OUTPUT" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # Generate report artifact
+      - name: Generate Flaktor report
+        if: always()
+        run: |
+          flaktor report --days 30 --output flaktor-report.txt
+
+      - name: Upload Flaktor report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flaktor-report
+          path: flaktor-report.txt
+          retention-days: 30
+
+      # Save updated database to cache
+      - name: Save Flaktor database
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .flaktor
+          key: flaktor-db-${{ github.repository }}-${{ github.run_id }}

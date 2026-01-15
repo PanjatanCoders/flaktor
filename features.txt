@@ -1,4 +1,0 @@
-Add a clean command to purge old data from the database
-Add CI/CD integration examples (GitHub Actions, GitLab CI)
-Push current changes to GitHub and continue later
-Something else - let me know what you have in mind
