@@ -370,11 +370,166 @@ class Database:
             "database_size_mb": round(db_size_mb, 2)
         }
     
+    def get_flaky_tests(
+        self,
+        min_runs: int = 5,
+        lookback_days: int = 30,
+        min_flip_rate: float = 0.1,
+    ) -> List[dict]:
+        """
+        Identify flaky tests based on status flip rate.
+
+        A test is considered flaky if it has inconsistent results
+        (passes sometimes, fails other times) within recent runs.
+
+        Args:
+            min_runs: Minimum number of runs required to evaluate
+            lookback_days: Number of days to look back
+            min_flip_rate: Minimum flip rate to be considered flaky (0.0-1.0)
+
+        Returns:
+            List of dicts with test info and flakiness metrics
+        """
+        if not self.conn:
+            raise DatabaseError("Database not connected.")
+
+        cursor = self.conn.cursor()
+
+        # Get tests with their recent results
+        cursor.execute("""
+            SELECT
+                test_name,
+                COUNT(*) as total_runs,
+                SUM(CASE WHEN status = 'passed' THEN 1 ELSE 0 END) as passed,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+                SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors,
+                SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) as skipped,
+                AVG(duration) as avg_duration,
+                MAX(timestamp) as last_run
+            FROM test_results
+            WHERE timestamp >= datetime('now', ?)
+            GROUP BY test_name
+            HAVING COUNT(*) >= ?
+        """, (f'-{lookback_days} days', min_runs))
+
+        results = []
+        for row in cursor.fetchall():
+            test_name = row[0]
+            total = row[1]
+            passed = row[2]
+            failed = row[3] + row[4]  # failures + errors
+
+            # Calculate flip rate (how often it changes between pass/fail)
+            # A test that always passes or always fails has 0 flip rate
+            if total <= 1:
+                flip_rate = 0.0
+            else:
+                # Flip rate approximation: 2 * min(pass_rate, fail_rate)
+                pass_rate = passed / total
+                fail_rate = failed / total
+                flip_rate = 2 * min(pass_rate, fail_rate)
+
+            if flip_rate >= min_flip_rate:
+                results.append({
+                    "test_name": test_name,
+                    "total_runs": total,
+                    "passed": passed,
+                    "failed": failed,
+                    "skipped": row[5],
+                    "flip_rate": round(flip_rate, 3),
+                    "pass_rate": round(passed / total, 3),
+                    "avg_duration": round(row[6], 3),
+                    "last_run": row[7],
+                })
+
+        # Sort by flip rate descending
+        results.sort(key=lambda x: x["flip_rate"], reverse=True)
+        return results
+
+    def get_test_summary(
+        self,
+        lookback_days: int = 30,
+        status_filter: Optional[str] = None,
+    ) -> List[dict]:
+        """
+        Get summary statistics for all tests.
+
+        Args:
+            lookback_days: Number of days to look back
+            status_filter: Optional filter by last status
+
+        Returns:
+            List of test summaries
+        """
+        if not self.conn:
+            raise DatabaseError("Database not connected.")
+
+        cursor = self.conn.cursor()
+
+        cursor.execute("""
+            WITH latest_results AS (
+                SELECT
+                    test_name,
+                    status,
+                    ROW_NUMBER() OVER (PARTITION BY test_name ORDER BY timestamp DESC) as rn
+                FROM test_results
+                WHERE timestamp >= datetime('now', ?)
+            ),
+            test_stats AS (
+                SELECT
+                    test_name,
+                    COUNT(*) as total_runs,
+                    SUM(CASE WHEN status = 'passed' THEN 1 ELSE 0 END) as passed,
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+                    SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors,
+                    SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) as skipped,
+                    AVG(duration) as avg_duration,
+                    MAX(timestamp) as last_run
+                FROM test_results
+                WHERE timestamp >= datetime('now', ?)
+                GROUP BY test_name
+            )
+            SELECT
+                s.test_name,
+                s.total_runs,
+                s.passed,
+                s.failed,
+                s.errors,
+                s.skipped,
+                s.avg_duration,
+                s.last_run,
+                l.status as last_status
+            FROM test_stats s
+            LEFT JOIN latest_results l ON s.test_name = l.test_name AND l.rn = 1
+            ORDER BY s.test_name
+        """, (f'-{lookback_days} days', f'-{lookback_days} days'))
+
+        results = []
+        for row in cursor.fetchall():
+            last_status = row[8]
+
+            # Apply status filter if specified
+            if status_filter and last_status != status_filter:
+                continue
+
+            results.append({
+                "test_name": row[0],
+                "total_runs": row[1],
+                "passed": row[2],
+                "failed": row[3] + row[4],
+                "skipped": row[5],
+                "avg_duration": round(row[6], 3) if row[6] else 0,
+                "last_run": row[7],
+                "last_status": last_status,
+            })
+
+        return results
+
     def __enter__(self):
         """Context manager support."""
         self.connect()
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager cleanup."""
         self.close()
