@@ -96,7 +96,7 @@ class Database:
                     run_id TEXT PRIMARY KEY,
                     timestamp TIMESTAMP NOT NULL,
                     branch TEXT,
-                    commit TEXT,
+                    commit_hash TEXT,
                     environment TEXT,
                     metadata TEXT,  -- JSON
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -198,13 +198,13 @@ class Database:
             metadata_json = json.dumps(test_run.metadata) if test_run.metadata else None
             
             self.conn.execute("""
-                INSERT INTO test_runs (run_id, timestamp, branch, commit, environment, metadata)
+                INSERT INTO test_runs (run_id, timestamp, branch, commit_hash, environment, metadata)
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (
                 test_run.run_id,
                 test_run.timestamp.isoformat(),
                 test_run.branch,
-                test_run.commit,
+                test_run.commit_hash,
                 test_run.environment,
                 metadata_json
             ))

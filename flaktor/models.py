@@ -27,14 +27,14 @@ class TestRun:
         run_id: Unique identifier for this run (e.g., CI build ID)
         timestamp: When the test run occurred
         branch: Git branch name (optional)
-        commit: Git commit hash (optional)
+        commit_hash: Git commit hash (optional)
         environment: Environment name like 'ci', 'staging' (optional)
         metadata: Additional key-value data (optional)
     """
     run_id: str
     timestamp: datetime
     branch: Optional[str] = None
-    commit: Optional[str] = None
+    commit_hash: Optional[str] = None
     environment: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = field(default_factory=dict)
 

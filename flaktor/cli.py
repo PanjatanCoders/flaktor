@@ -164,7 +164,7 @@ def init(
                 f"[bold red]❌ Initialization failed[/bold red]\n\n"
                 f"{str(e)}\n\n"
                 f"💡 Need help? Check the documentation or file an issue:\n"
-                f"   https://github.com/yourusername/flaktor/issues",
+                f"   https://github.com/PanjatanCoders/flaktor/issues",
                 border_style="red",
                 title="Error"
             )
@@ -249,8 +249,9 @@ def info(
         raise typer.Exit(code=1)
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def main(
+    ctx: typer.Context,
     version: bool = typer.Option(
         False,
         "--version",
@@ -260,13 +261,15 @@ def main(
 ):
     """
     🔍 Flaktor - Flaky test detection made simple.
-    
+
     Stop guessing. Start knowing why your tests fail.
     """
     if version:
         console.print("[bold cyan]Flaktor[/bold cyan] version [green]0.1.0[/green]")
         console.print("[dim]Framework-agnostic flaky test intelligence[/dim]")
         raise typer.Exit()
+    elif ctx.invoked_subcommand is None:
+        console.print(ctx.get_help())
 
 
 if __name__ == "__main__":
