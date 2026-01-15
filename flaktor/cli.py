@@ -445,6 +445,259 @@ def _truncate_test_name(name: str, max_length: int = 60) -> str:
     return "..." + name[-(max_length - 3):]
 
 
+def _format_status(status: str) -> str:
+    """Format status with color."""
+    if status == "passed":
+        return "[green]PASS[/green]"
+    elif status == "failed":
+        return "[red]FAIL[/red]"
+    elif status == "error":
+        return "[red]ERROR[/red]"
+    elif status == "skipped":
+        return "[yellow]SKIP[/yellow]"
+    return "[dim]?[/dim]"
+
+
+@app.command()
+def history(
+    test_name: str = typer.Argument(
+        ...,
+        help="Test name (full or partial match)"
+    ),
+    db_path: Optional[Path] = typer.Option(
+        None,
+        "--db",
+        "-d",
+        help="Database path (default: auto-detect)"
+    ),
+    limit: int = typer.Option(
+        20,
+        "--limit",
+        "-n",
+        help="Maximum number of results to show"
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Show failure messages and stack traces"
+    ),
+):
+    """
+    📜 View detailed history for a specific test.
+
+    Show the run history of a test including status changes over time,
+    durations, and failure details. Supports partial test name matching.
+
+    Examples:
+        # View history for a specific test
+        $ flaktor history test_auth.TestLogin.test_valid_credentials
+
+        # Search by partial name
+        $ flaktor history test_login
+
+        # Show more results with failure details
+        $ flaktor history test_login --limit 50 --verbose
+    """
+    if db_path is None:
+        db_path = get_default_db_path()
+
+    if not ensure_database_exists(db_path):
+        console.print(
+            Panel.fit(
+                "[bold red]❌ Database not initialized[/bold red]\n\n"
+                f"💡 Run first: [yellow]flaktor init[/yellow]",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        with Database(db_path) as db:
+            # First, find matching test names
+            all_tests = db.get_all_test_names()
+
+            # Find exact match first, then partial matches
+            exact_match = test_name if test_name in all_tests else None
+            partial_matches = [t for t in all_tests if test_name.lower() in t.lower()]
+
+            if exact_match:
+                selected_test = exact_match
+            elif len(partial_matches) == 1:
+                selected_test = partial_matches[0]
+            elif len(partial_matches) > 1:
+                # Show matching tests and let user choose
+                console.print()
+                console.print(
+                    Panel.fit(
+                        f"[yellow]Multiple tests match '{test_name}'[/yellow]\n\n"
+                        f"Found {len(partial_matches)} matching tests.\n"
+                        f"Please be more specific or use one of these:",
+                        border_style="yellow",
+                        title="Multiple Matches"
+                    )
+                )
+                console.print()
+
+                table = Table(show_header=True, header_style="bold")
+                table.add_column("#", style="dim", width=4)
+                table.add_column("Test Name", style="cyan")
+
+                for i, match in enumerate(partial_matches[:15], 1):
+                    table.add_row(str(i), match)
+
+                if len(partial_matches) > 15:
+                    table.add_row("...", f"[dim]and {len(partial_matches) - 15} more[/dim]")
+
+                console.print(table)
+                console.print()
+                console.print("[dim]💡 Tip: Copy the full test name and try again[/dim]")
+                return
+            else:
+                console.print(
+                    Panel.fit(
+                        f"[bold red]❌ No tests found matching '{test_name}'[/bold red]\n\n"
+                        f"💡 Use [cyan]flaktor list[/cyan] to see all available tests",
+                        border_style="red",
+                        title="Not Found"
+                    )
+                )
+                raise typer.Exit(code=1)
+
+            # Get history for the selected test
+            history_rows = db.get_test_history(selected_test, limit=limit)
+
+        if not history_rows:
+            console.print(
+                Panel.fit(
+                    f"[yellow]No history found for test[/yellow]\n\n"
+                    f"Test: [cyan]{selected_test}[/cyan]",
+                    border_style="yellow",
+                    title="Empty"
+                )
+            )
+            return
+
+        # Calculate summary statistics
+        total = len(history_rows)
+        passed = sum(1 for r in history_rows if r[1] == "passed")
+        failed = sum(1 for r in history_rows if r[1] in ("failed", "error"))
+        skipped = sum(1 for r in history_rows if r[1] == "skipped")
+        avg_duration = sum(r[2] for r in history_rows) / total if total > 0 else 0
+
+        # Detect flakiness pattern
+        if total >= 2:
+            status_changes = sum(
+                1 for i in range(1, len(history_rows))
+                if history_rows[i][1] != history_rows[i-1][1]
+            )
+            is_flaky = status_changes >= 2 and passed > 0 and failed > 0
+        else:
+            status_changes = 0
+            is_flaky = False
+
+        # Print header
+        console.print()
+        header_content = f"[bold cyan]{selected_test}[/bold cyan]\n\n"
+        header_content += f"📊 [bold]Statistics[/bold] (last {total} runs):\n"
+        header_content += f"   [green]Passed: {passed}[/green] | [red]Failed: {failed}[/red] | [yellow]Skipped: {skipped}[/yellow]\n"
+        header_content += f"   Pass Rate: [{'green' if passed/total > 0.8 else 'yellow' if passed/total > 0.5 else 'red'}]{passed/total*100:.0f}%[/{'green' if passed/total > 0.8 else 'yellow' if passed/total > 0.5 else 'red'}]\n"
+        header_content += f"   Avg Duration: [cyan]{avg_duration:.3f}s[/cyan]\n"
+
+        if is_flaky:
+            header_content += f"\n   ⚠️  [bold red]FLAKY[/bold red] - {status_changes} status changes detected"
+
+        console.print(Panel(header_content, title="Test History", border_style="blue"))
+
+        # Create history table
+        table = Table(show_header=True, header_style="bold", show_lines=verbose)
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Status", justify="center", width=8)
+        table.add_column("Duration", justify="right", width=10)
+        table.add_column("Run ID", style="dim", width=20)
+        table.add_column("Timestamp", width=20)
+
+        if verbose:
+            table.add_column("Failure Info", style="red", no_wrap=False)
+
+        for i, row in enumerate(history_rows, 1):
+            test_name_col, status, duration, run_id, timestamp, failure_msg, failure_type = row
+
+            status_display = _format_status(status)
+
+            # Format timestamp nicely
+            try:
+                ts = datetime.fromisoformat(timestamp)
+                ts_display = ts.strftime("%Y-%m-%d %H:%M")
+            except (ValueError, TypeError):
+                ts_display = str(timestamp)[:16] if timestamp else "-"
+
+            # Truncate run_id for display
+            run_id_display = run_id[:18] + ".." if len(run_id) > 20 else run_id
+
+            if verbose:
+                failure_info = ""
+                if failure_msg or failure_type:
+                    if failure_type:
+                        failure_info = f"[bold]{failure_type}[/bold]\n"
+                    if failure_msg:
+                        failure_info += failure_msg[:200]
+                        if len(failure_msg) > 200:
+                            failure_info += "..."
+
+                table.add_row(
+                    str(i),
+                    status_display,
+                    f"{duration:.3f}s",
+                    run_id_display,
+                    ts_display,
+                    failure_info or "[dim]-[/dim]"
+                )
+            else:
+                table.add_row(
+                    str(i),
+                    status_display,
+                    f"{duration:.3f}s",
+                    run_id_display,
+                    ts_display
+                )
+
+        console.print()
+        console.print(table)
+        console.print()
+
+        # Show visual timeline of recent results
+        if total >= 5:
+            timeline = "Recent: "
+            for row in history_rows[:20]:
+                status = row[1]
+                if status == "passed":
+                    timeline += "[green]●[/green]"
+                elif status in ("failed", "error"):
+                    timeline += "[red]●[/red]"
+                elif status == "skipped":
+                    timeline += "[yellow]○[/yellow]"
+                else:
+                    timeline += "[dim]○[/dim]"
+            timeline += " (newest → oldest)"
+            console.print(timeline)
+            console.print()
+
+        if len(history_rows) == limit:
+            console.print(f"[dim]Showing last {limit} runs. Use --limit to see more.[/dim]")
+
+    except DatabaseError as e:
+        console.print(
+            Panel.fit(
+                f"[bold red]❌ Database error[/bold red]\n\n{str(e)}",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def report(
     db_path: Optional[Path] = typer.Option(

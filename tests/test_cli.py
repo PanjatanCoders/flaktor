@@ -260,6 +260,77 @@ class TestReportCommand:
         assert "Last 7 days" in result.stdout
 
 
+class TestHistoryCommand:
+    """Tests for the history command."""
+
+    def test_history_exact_match(self, initialized_db: Path, sample_xml: Path):
+        """Test history with exact test name."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+
+        result = runner.invoke(
+            app, ["history", "TestClass.test_pass", "--db", str(initialized_db)]
+        )
+
+        assert result.exit_code == 0
+        assert "Test History" in result.stdout
+        assert "Statistics" in result.stdout
+
+    def test_history_partial_match_single(self, initialized_db: Path, sample_xml: Path):
+        """Test history with partial match that finds one test."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+
+        result = runner.invoke(
+            app, ["history", "test_pass", "--db", str(initialized_db)]
+        )
+
+        assert result.exit_code == 0
+        assert "Test History" in result.stdout
+
+    def test_history_partial_match_multiple(self, initialized_db: Path, sample_xml: Path):
+        """Test history with partial match that finds multiple tests."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+
+        result = runner.invoke(
+            app, ["history", "test_", "--db", str(initialized_db)]
+        )
+
+        assert result.exit_code == 0
+        assert "Multiple Matches" in result.stdout
+
+    def test_history_not_found(self, initialized_db: Path, sample_xml: Path):
+        """Test history with non-existent test."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+
+        result = runner.invoke(
+            app, ["history", "nonexistent_test_xyz", "--db", str(initialized_db)]
+        )
+
+        assert result.exit_code == 1
+        assert "No tests found" in result.stdout
+
+    def test_history_verbose_mode(self, initialized_db: Path, sample_xml: Path):
+        """Test history with verbose flag."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+
+        result = runner.invoke(
+            app, ["history", "test_fail", "--db", str(initialized_db), "--verbose"]
+        )
+
+        assert result.exit_code == 0
+        # Verbose mode shows failure info - check for AssertionError from sample XML
+        assert "AssertionError" in result.stdout or "FAIL" in result.stdout
+
+    def test_history_with_limit(self, initialized_db: Path, sample_xml: Path):
+        """Test history with custom limit."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+
+        result = runner.invoke(
+            app, ["history", "test_pass", "--db", str(initialized_db), "--limit", "5"]
+        )
+
+        assert result.exit_code == 0
+
+
 class TestVersionFlag:
     """Tests for the --version flag."""
 
