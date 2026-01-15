@@ -459,6 +459,160 @@ def _format_status(status: str) -> str:
 
 
 @app.command()
+def clean(
+    db_path: Optional[Path] = typer.Option(
+        None,
+        "--db",
+        "-d",
+        help="Database path (default: auto-detect)"
+    ),
+    days: int = typer.Option(
+        90,
+        "--days",
+        help="Number of days of data to keep (older data is deleted)"
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Show what would be deleted without actually deleting"
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Skip confirmation prompt"
+    ),
+    vacuum: bool = typer.Option(
+        True,
+        "--vacuum/--no-vacuum",
+        help="Run VACUUM after cleanup to reclaim disk space"
+    ),
+):
+    """
+    🧹 Clean up old data from the database.
+
+    Remove test results and runs older than the specified number of days
+    to keep the database size manageable.
+
+    Examples:
+        # Preview what would be deleted (dry run)
+        $ flaktor clean --dry-run
+
+        # Delete data older than 90 days (default)
+        $ flaktor clean
+
+        # Delete data older than 30 days
+        $ flaktor clean --days 30
+
+        # Delete without confirmation
+        $ flaktor clean --force
+    """
+    if db_path is None:
+        db_path = get_default_db_path()
+
+    if not ensure_database_exists(db_path):
+        console.print(
+            Panel.fit(
+                "[bold red]❌ Database not initialized[/bold red]\n\n"
+                f"💡 Run first: [yellow]flaktor init[/yellow]",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        with Database(db_path) as db:
+            # Get current stats
+            stats_before = db.get_database_stats()
+            size_before = stats_before["database_size_mb"]
+
+            # First, do a dry run to see what would be deleted
+            preview = db.purge_old_data(days_to_keep=days, dry_run=True)
+
+        results_count = preview["test_results_deleted"]
+        runs_count = preview["test_runs_deleted"]
+
+        if results_count == 0 and runs_count == 0:
+            console.print()
+            console.print(
+                Panel.fit(
+                    "[green]✅ Database is already clean![/green]\n\n"
+                    f"No data older than {days} days found.",
+                    border_style="green",
+                    title="Nothing to Clean"
+                )
+            )
+            return
+
+        # Show preview
+        console.print()
+        console.print(
+            Panel.fit(
+                f"[bold]Data older than {days} days:[/bold]\n\n"
+                f"📝 Test results to delete: [yellow]{results_count:,}[/yellow]\n"
+                f"🏃 Test runs to delete: [yellow]{runs_count:,}[/yellow]\n"
+                f"💾 Current database size: [cyan]{size_before} MB[/cyan]",
+                border_style="yellow",
+                title="Cleanup Preview"
+            )
+        )
+
+        if dry_run:
+            console.print()
+            console.print("[dim]This was a dry run. No data was deleted.[/dim]")
+            console.print("[dim]Remove --dry-run to actually delete the data.[/dim]")
+            return
+
+        # Confirm unless --force
+        if not force:
+            console.print()
+            confirm = typer.confirm(
+                f"Delete {results_count:,} test results and {runs_count:,} test runs?",
+                default=False
+            )
+            if not confirm:
+                console.print("[dim]Aborted.[/dim]")
+                raise typer.Exit(code=0)
+
+        # Perform the cleanup
+        with console.status("[bold blue]Cleaning up old data...", spinner="dots"):
+            with Database(db_path) as db:
+                result = db.purge_old_data(days_to_keep=days, dry_run=False)
+
+                if vacuum:
+                    db.vacuum()
+
+                stats_after = db.get_database_stats()
+                size_after = stats_after["database_size_mb"]
+
+        space_saved = size_before - size_after
+
+        console.print()
+        console.print(
+            Panel.fit(
+                f"[bold green]✅ Cleanup complete![/bold green]\n\n"
+                f"📝 Test results deleted: [green]{result['test_results_deleted']:,}[/green]\n"
+                f"🏃 Test runs deleted: [green]{result['test_runs_deleted']:,}[/green]\n"
+                f"💾 Database size: [cyan]{size_before} MB → {size_after} MB[/cyan]\n"
+                f"📉 Space saved: [green]{space_saved:.2f} MB[/green]",
+                border_style="green",
+                title="Cleanup Complete"
+            )
+        )
+
+    except DatabaseError as e:
+        console.print(
+            Panel.fit(
+                f"[bold red]❌ Database error[/bold red]\n\n{str(e)}",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+
+@app.command()
 def history(
     test_name: str = typer.Argument(
         ...,

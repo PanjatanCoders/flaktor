@@ -405,3 +405,104 @@ class TestGetTestSummary:
 
         assert len(summary) == 1
         assert summary[0]["last_status"] == "failed"
+
+
+class TestPurgeOldData:
+    """Tests for purging old data."""
+
+    def test_purge_dry_run(self, initialized_db: Database):
+        """Test dry run counts records without deleting."""
+        # Insert old data (100 days ago)
+        from datetime import timedelta
+        old_time = datetime.now() - timedelta(days=100)
+
+        run = TestRun(run_id="old-run", timestamp=old_time)
+        initialized_db.insert_test_run(run)
+
+        result = TestResult(
+            test_name="old_test",
+            status=TestStatus.PASSED,
+            duration=0.1,
+            run_id="old-run",
+            timestamp=old_time,
+        )
+        initialized_db.insert_test_results([result])
+
+        # Dry run should count but not delete
+        preview = initialized_db.purge_old_data(days_to_keep=90, dry_run=True)
+
+        assert preview["dry_run"] is True
+        assert preview["test_results_deleted"] == 1
+        assert preview["test_runs_deleted"] == 1
+
+        # Data should still exist
+        stats = initialized_db.get_database_stats()
+        assert stats["total_results"] == 1
+        assert stats["total_runs"] == 1
+
+    def test_purge_deletes_old_data(self, initialized_db: Database):
+        """Test actual deletion of old data."""
+        from datetime import timedelta
+
+        # Insert old data (100 days ago)
+        old_time = datetime.now() - timedelta(days=100)
+        old_run = TestRun(run_id="old-run", timestamp=old_time)
+        initialized_db.insert_test_run(old_run)
+        old_result = TestResult(
+            test_name="old_test",
+            status=TestStatus.PASSED,
+            duration=0.1,
+            run_id="old-run",
+            timestamp=old_time,
+        )
+        initialized_db.insert_test_results([old_result])
+
+        # Insert recent data
+        recent_run = TestRun(run_id="recent-run", timestamp=datetime.now())
+        initialized_db.insert_test_run(recent_run)
+        recent_result = TestResult(
+            test_name="recent_test",
+            status=TestStatus.PASSED,
+            duration=0.1,
+            run_id="recent-run",
+            timestamp=datetime.now(),
+        )
+        initialized_db.insert_test_results([recent_result])
+
+        # Purge old data
+        result = initialized_db.purge_old_data(days_to_keep=90, dry_run=False)
+
+        assert result["dry_run"] is False
+        assert result["test_results_deleted"] == 1
+        assert result["test_runs_deleted"] == 1
+
+        # Only recent data should remain
+        stats = initialized_db.get_database_stats()
+        assert stats["total_results"] == 1
+        assert stats["total_runs"] == 1
+
+    def test_purge_nothing_to_delete(
+        self,
+        initialized_db: Database,
+        sample_test_run: TestRun,
+        sample_test_results: list[TestResult],
+    ):
+        """Test purge when no data is old enough."""
+        initialized_db.insert_test_run(sample_test_run)
+        initialized_db.insert_test_results(sample_test_results)
+
+        result = initialized_db.purge_old_data(days_to_keep=90, dry_run=False)
+
+        assert result["test_results_deleted"] == 0
+        assert result["test_runs_deleted"] == 0
+
+
+class TestVacuum:
+    """Tests for database vacuum."""
+
+    def test_vacuum_returns_size(self, initialized_db: Database):
+        """Test vacuum returns database size."""
+        size = initialized_db.vacuum()
+
+        assert isinstance(size, int)
+        assert size > 0

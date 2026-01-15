@@ -525,6 +525,89 @@ class Database:
 
         return results
 
+    def purge_old_data(
+        self,
+        days_to_keep: int = 90,
+        dry_run: bool = False,
+    ) -> dict:
+        """
+        Purge old test data from the database.
+
+        Args:
+            days_to_keep: Number of days of data to keep (older data is deleted)
+            dry_run: If True, only count what would be deleted without actually deleting
+
+        Returns:
+            Dictionary with counts of deleted/would-be-deleted records
+        """
+        if not self.conn:
+            raise DatabaseError("Database not connected.")
+
+        cursor = self.conn.cursor()
+        cutoff_date = f'-{days_to_keep} days'
+
+        # Count records that will be affected
+        cursor.execute("""
+            SELECT COUNT(*) FROM test_results
+            WHERE timestamp < datetime('now', ?)
+        """, (cutoff_date,))
+        results_to_delete = cursor.fetchone()[0]
+
+        cursor.execute("""
+            SELECT COUNT(*) FROM test_runs
+            WHERE timestamp < datetime('now', ?)
+        """, (cutoff_date,))
+        runs_to_delete = cursor.fetchone()[0]
+
+        if dry_run:
+            return {
+                "test_results_deleted": results_to_delete,
+                "test_runs_deleted": runs_to_delete,
+                "dry_run": True,
+            }
+
+        # Actually delete the data
+        try:
+            cursor.execute("""
+                DELETE FROM test_results
+                WHERE timestamp < datetime('now', ?)
+            """, (cutoff_date,))
+            deleted_results = cursor.rowcount
+
+            cursor.execute("""
+                DELETE FROM test_runs
+                WHERE timestamp < datetime('now', ?)
+            """, (cutoff_date,))
+            deleted_runs = cursor.rowcount
+
+            self.conn.commit()
+
+            return {
+                "test_results_deleted": deleted_results,
+                "test_runs_deleted": deleted_runs,
+                "dry_run": False,
+            }
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            raise DatabaseError(f"Failed to purge old data: {e}")
+
+    def vacuum(self) -> int:
+        """
+        Vacuum the database to reclaim space after deleting data.
+
+        Returns:
+            Size of database in bytes after vacuum
+        """
+        if not self.conn:
+            raise DatabaseError("Database not connected.")
+
+        try:
+            self.conn.execute("VACUUM")
+            # Return new database size
+            return self.db_path.stat().st_size
+        except sqlite3.Error as e:
+            raise DatabaseError(f"Failed to vacuum database: {e}")
+
     def __enter__(self):
         """Context manager support."""
         self.connect()

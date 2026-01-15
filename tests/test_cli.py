@@ -260,6 +260,66 @@ class TestReportCommand:
         assert "Last 7 days" in result.stdout
 
 
+class TestCleanCommand:
+    """Tests for the clean command."""
+
+    def test_clean_nothing_to_delete(self, initialized_db: Path, sample_xml: Path):
+        """Test clean when no old data exists."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+
+        result = runner.invoke(
+            app, ["clean", "--db", str(initialized_db)]
+        )
+
+        assert result.exit_code == 0
+        assert "already clean" in result.stdout
+
+    def test_clean_dry_run(self, initialized_db: Path, tmp_path: Path):
+        """Test clean with dry run option."""
+        # Create XML with old timestamps
+        old_xml = tmp_path / "old_results.xml"
+        old_xml.write_text("""<?xml version="1.0" encoding="UTF-8"?>
+        <testsuite name="TestClass" tests="1" timestamp="2025-01-01T10:00:00">
+            <testcase name="test_old" classname="TestClass" time="0.1"/>
+        </testsuite>
+        """)
+        runner.invoke(app, ["upload", str(old_xml), "--db", str(initialized_db)])
+
+        result = runner.invoke(
+            app, ["clean", "--db", str(initialized_db), "--dry-run", "--days", "30"]
+        )
+
+        assert result.exit_code == 0
+        assert "dry run" in result.stdout.lower()
+
+    def test_clean_with_force(self, initialized_db: Path, tmp_path: Path):
+        """Test clean with force flag skips confirmation."""
+        # Create XML with old timestamps
+        old_xml = tmp_path / "old_results.xml"
+        old_xml.write_text("""<?xml version="1.0" encoding="UTF-8"?>
+        <testsuite name="TestClass" tests="1" timestamp="2025-01-01T10:00:00">
+            <testcase name="test_old" classname="TestClass" time="0.1"/>
+        </testsuite>
+        """)
+        runner.invoke(app, ["upload", str(old_xml), "--db", str(initialized_db)])
+
+        result = runner.invoke(
+            app, ["clean", "--db", str(initialized_db), "--force", "--days", "30"]
+        )
+
+        assert result.exit_code == 0
+        assert "Cleanup complete" in result.stdout
+
+    def test_clean_database_not_initialized(self, tmp_path: Path):
+        """Test clean fails if database not initialized."""
+        db_path = tmp_path / ".flaktor" / "flaktor.db"
+
+        result = runner.invoke(app, ["clean", "--db", str(db_path)])
+
+        assert result.exit_code == 1
+        assert "not initialized" in result.stdout
+
+
 class TestHistoryCommand:
     """Tests for the history command."""
 
