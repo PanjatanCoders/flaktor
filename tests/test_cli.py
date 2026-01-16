@@ -148,7 +148,7 @@ class TestUploadCommand:
         )
 
         assert result.exit_code == 1
-        assert "No valid XML files found" in result.stdout
+        assert "No valid test result files found" in result.stdout
 
     def test_upload_database_not_initialized(self, tmp_path: Path, sample_xml: Path):
         """Test upload with uninitialized database."""

@@ -1,14 +1,20 @@
-"""Tests for the XML parser module."""
+"""Tests for the parser module."""
 
 import pytest
 from pathlib import Path
 from datetime import datetime
 import tempfile
+import json
 
 from flaktor.parser import (
     parse_junit_xml,
     parse_multiple_files,
+    parse_cucumber_json,
+    parse_playwright_json,
+    parse_test_report,
+    detect_format,
     ParserError,
+    SUPPORTED_FORMATS,
 )
 from flaktor.models import TestStatus
 
@@ -336,3 +342,385 @@ class TestParseMultipleFiles:
         assert result.passed == 2
         assert result.failed == 1
         assert result.skipped == 1
+
+
+class TestParseCucumberJson:
+    """Tests for parse_cucumber_json function."""
+
+    def test_parse_simple_cucumber(self, tmp_path: Path):
+        """Test parsing a simple Cucumber JSON report."""
+        cucumber_data = [
+            {
+                "keyword": "Feature",
+                "name": "Login Feature",
+                "uri": "features/login.feature",
+                "elements": [
+                    {
+                        "type": "scenario",
+                        "name": "Valid login",
+                        "steps": [
+                            {
+                                "keyword": "Given",
+                                "name": "I am on the login page",
+                                "result": {"status": "passed", "duration": 100000000}
+                            },
+                            {
+                                "keyword": "When",
+                                "name": "I enter valid credentials",
+                                "result": {"status": "passed", "duration": 200000000}
+                            },
+                            {
+                                "keyword": "Then",
+                                "name": "I should see the dashboard",
+                                "result": {"status": "passed", "duration": 150000000}
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+
+        json_file = tmp_path / "cucumber.json"
+        json_file.write_text(json.dumps(cucumber_data))
+
+        result = parse_cucumber_json(json_file)
+
+        assert result.total_tests == 1
+        assert result.passed == 1
+        assert result.failed == 0
+        assert result.results[0].test_name == "Login Feature.Valid login"
+        assert result.results[0].duration == pytest.approx(0.45, rel=0.01)
+
+    def test_parse_cucumber_with_failure(self, tmp_path: Path):
+        """Test parsing Cucumber JSON with failed scenario."""
+        cucumber_data = [
+            {
+                "keyword": "Feature",
+                "name": "Search Feature",
+                "uri": "features/search.feature",
+                "elements": [
+                    {
+                        "type": "scenario",
+                        "name": "Search returns results",
+                        "steps": [
+                            {
+                                "keyword": "Given",
+                                "name": "I am on the search page",
+                                "result": {"status": "passed", "duration": 100000000}
+                            },
+                            {
+                                "keyword": "When",
+                                "name": "I search for something",
+                                "result": {
+                                    "status": "failed",
+                                    "duration": 50000000,
+                                    "error_message": "AssertionError: Expected results"
+                                }
+                            },
+                            {
+                                "keyword": "Then",
+                                "name": "I should see results",
+                                "result": {"status": "skipped", "duration": 0}
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+
+        json_file = tmp_path / "cucumber.json"
+        json_file.write_text(json.dumps(cucumber_data))
+
+        result = parse_cucumber_json(json_file)
+
+        assert result.total_tests == 1
+        assert result.failed == 1
+        assert result.results[0].status == TestStatus.FAILED
+        assert "AssertionError" in result.results[0].failure_message
+
+    def test_parse_cucumber_multiple_scenarios(self, tmp_path: Path):
+        """Test parsing Cucumber JSON with multiple scenarios."""
+        cucumber_data = [
+            {
+                "keyword": "Feature",
+                "name": "User Feature",
+                "uri": "features/user.feature",
+                "elements": [
+                    {
+                        "type": "scenario",
+                        "name": "Create user",
+                        "steps": [{"result": {"status": "passed", "duration": 100000000}}]
+                    },
+                    {
+                        "type": "scenario",
+                        "name": "Delete user",
+                        "steps": [{"result": {"status": "passed", "duration": 100000000}}]
+                    },
+                    {
+                        "type": "background",
+                        "name": "Setup",
+                        "steps": [{"result": {"status": "passed", "duration": 50000000}}]
+                    }
+                ]
+            }
+        ]
+
+        json_file = tmp_path / "cucumber.json"
+        json_file.write_text(json.dumps(cucumber_data))
+
+        result = parse_cucumber_json(json_file)
+
+        # Background should not be counted as a test
+        assert result.total_tests == 2
+
+    def test_parse_cucumber_file_not_found(self, tmp_path: Path):
+        """Test error when file doesn't exist."""
+        with pytest.raises(ParserError, match="File not found"):
+            parse_cucumber_json(tmp_path / "nonexistent.json")
+
+    def test_parse_cucumber_invalid_json(self, tmp_path: Path):
+        """Test error on invalid JSON."""
+        json_file = tmp_path / "invalid.json"
+        json_file.write_text("not valid json")
+
+        with pytest.raises(ParserError, match="Invalid JSON"):
+            parse_cucumber_json(json_file)
+
+
+class TestParsePlaywrightJson:
+    """Tests for parse_playwright_json function."""
+
+    def test_parse_simple_playwright(self, tmp_path: Path):
+        """Test parsing a simple Playwright JSON report."""
+        playwright_data = {
+            "config": {},
+            "suites": [
+                {
+                    "title": "tests/example.spec.ts",
+                    "specs": [
+                        {
+                            "title": "has title",
+                            "tests": [
+                                {
+                                    "projectName": "chromium",
+                                    "results": [
+                                        {
+                                            "status": "passed",
+                                            "duration": 1500
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ],
+                    "suites": []
+                }
+            ]
+        }
+
+        json_file = tmp_path / "playwright.json"
+        json_file.write_text(json.dumps(playwright_data))
+
+        result = parse_playwright_json(json_file)
+
+        assert result.total_tests == 1
+        assert result.passed == 1
+        assert "[chromium]" in result.results[0].test_name
+        assert result.results[0].duration == pytest.approx(1.5, rel=0.01)
+
+    def test_parse_playwright_with_failure(self, tmp_path: Path):
+        """Test parsing Playwright JSON with failed test."""
+        playwright_data = {
+            "config": {},
+            "suites": [
+                {
+                    "title": "tests/example.spec.ts",
+                    "specs": [
+                        {
+                            "title": "should fail",
+                            "tests": [
+                                {
+                                    "projectName": "firefox",
+                                    "results": [
+                                        {
+                                            "status": "failed",
+                                            "duration": 2000,
+                                            "error": {
+                                                "message": "Error: expect(received).toBe(expected)",
+                                                "stack": "at Object.<anonymous> (test.spec.ts:10:5)"
+                                            }
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ],
+                    "suites": []
+                }
+            ]
+        }
+
+        json_file = tmp_path / "playwright.json"
+        json_file.write_text(json.dumps(playwright_data))
+
+        result = parse_playwright_json(json_file)
+
+        assert result.total_tests == 1
+        assert result.failed == 1
+        assert result.results[0].status == TestStatus.FAILED
+        assert "expect" in result.results[0].failure_message
+
+    def test_parse_playwright_nested_suites(self, tmp_path: Path):
+        """Test parsing Playwright JSON with nested describe blocks."""
+        playwright_data = {
+            "config": {},
+            "suites": [
+                {
+                    "title": "tests/nested.spec.ts",
+                    "specs": [],
+                    "suites": [
+                        {
+                            "title": "outer describe",
+                            "specs": [],
+                            "suites": [
+                                {
+                                    "title": "inner describe",
+                                    "specs": [
+                                        {
+                                            "title": "nested test",
+                                            "tests": [
+                                                {
+                                                    "results": [{"status": "passed", "duration": 100}]
+                                                }
+                                            ]
+                                        }
+                                    ],
+                                    "suites": []
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+
+        json_file = tmp_path / "playwright.json"
+        json_file.write_text(json.dumps(playwright_data))
+
+        result = parse_playwright_json(json_file)
+
+        assert result.total_tests == 1
+        assert "outer describe" in result.results[0].test_name
+        assert "inner describe" in result.results[0].test_name
+        assert "nested test" in result.results[0].test_name
+
+    def test_parse_playwright_with_retries(self, tmp_path: Path):
+        """Test that last attempt is used when test has retries."""
+        playwright_data = {
+            "config": {},
+            "suites": [
+                {
+                    "title": "tests/retry.spec.ts",
+                    "specs": [
+                        {
+                            "title": "flaky test",
+                            "tests": [
+                                {
+                                    "results": [
+                                        {"status": "failed", "duration": 100},
+                                        {"status": "failed", "duration": 100},
+                                        {"status": "passed", "duration": 100}
+                                    ]
+                                }
+                            ]
+                        }
+                    ],
+                    "suites": []
+                }
+            ]
+        }
+
+        json_file = tmp_path / "playwright.json"
+        json_file.write_text(json.dumps(playwright_data))
+
+        result = parse_playwright_json(json_file)
+
+        # Should use the last result (passed)
+        assert result.total_tests == 1
+        assert result.passed == 1
+
+    def test_parse_playwright_file_not_found(self, tmp_path: Path):
+        """Test error when file doesn't exist."""
+        with pytest.raises(ParserError, match="File not found"):
+            parse_playwright_json(tmp_path / "nonexistent.json")
+
+
+class TestDetectFormat:
+    """Tests for format detection."""
+
+    def test_detect_xml_format(self, tmp_path: Path):
+        """Test detection of XML files as JUnit."""
+        xml_file = tmp_path / "results.xml"
+        xml_file.write_text("<testsuite/>")
+
+        assert detect_format(xml_file) == "junit"
+
+    def test_detect_cucumber_format(self, tmp_path: Path):
+        """Test detection of Cucumber JSON."""
+        cucumber_data = [{"keyword": "Feature", "name": "Test", "elements": []}]
+        json_file = tmp_path / "cucumber.json"
+        json_file.write_text(json.dumps(cucumber_data))
+
+        assert detect_format(json_file) == "cucumber"
+
+    def test_detect_playwright_format(self, tmp_path: Path):
+        """Test detection of Playwright JSON."""
+        playwright_data = {"config": {}, "suites": []}
+        json_file = tmp_path / "playwright.json"
+        json_file.write_text(json.dumps(playwright_data))
+
+        assert detect_format(json_file) == "playwright"
+
+    def test_detect_unknown_extension(self, tmp_path: Path):
+        """Test error on unknown file extension."""
+        txt_file = tmp_path / "results.txt"
+        txt_file.write_text("data")
+
+        with pytest.raises(ParserError, match="Unknown file extension"):
+            detect_format(txt_file)
+
+
+class TestParseTestReport:
+    """Tests for unified parse_test_report function."""
+
+    def test_parse_junit_auto(self, tmp_path: Path):
+        """Test auto-detection and parsing of JUnit XML."""
+        xml_content = """<?xml version="1.0"?>
+        <testsuite name="suite" tests="1">
+            <testcase name="test" classname="Class" time="0.1"/>
+        </testsuite>
+        """
+        xml_file = tmp_path / "results.xml"
+        xml_file.write_text(xml_content)
+
+        result = parse_test_report(xml_file)
+
+        assert result.total_tests == 1
+
+    def test_parse_with_explicit_format(self, tmp_path: Path):
+        """Test parsing with explicitly specified format."""
+        cucumber_data = [{"keyword": "Feature", "name": "Test", "uri": "test.feature", "elements": []}]
+        json_file = tmp_path / "report.json"
+        json_file.write_text(json.dumps(cucumber_data))
+
+        result = parse_test_report(json_file, format="cucumber")
+
+        assert result.total_tests == 0  # No scenarios
+
+    def test_parse_unknown_format_error(self, tmp_path: Path):
+        """Test error on unknown format."""
+        json_file = tmp_path / "report.json"
+        json_file.write_text("{}")
+
+        with pytest.raises(ParserError, match="Unknown format"):
+            parse_test_report(json_file, format="unknown")

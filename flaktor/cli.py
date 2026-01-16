@@ -14,7 +14,14 @@ from datetime import datetime
 import glob as glob_module
 
 from .database import Database, DatabaseError
-from .parser import parse_junit_xml, parse_multiple_files, ParserError
+from .parser import (
+    parse_junit_xml,
+    parse_multiple_files,
+    parse_test_report,
+    detect_format,
+    ParserError,
+    SUPPORTED_FORMATS,
+)
 
 # Initialize Rich console for beautiful output
 console = Console()
@@ -999,13 +1006,19 @@ def report(
 def upload(
     files: List[Path] = typer.Argument(
         ...,
-        help="Path(s) to JUnit/xUnit XML file(s). Supports glob patterns."
+        help="Path(s) to test result files. Supports glob patterns."
     ),
     db_path: Optional[Path] = typer.Option(
         None,
         "--db",
         "-d",
         help="Database path (default: auto-detect)"
+    ),
+    format: Optional[str] = typer.Option(
+        None,
+        "--format",
+        "-f",
+        help=f"Report format: {', '.join(SUPPORTED_FORMATS)} (auto-detected if not specified)"
     ),
     run_id: Optional[str] = typer.Option(
         None,
@@ -1033,17 +1046,24 @@ def upload(
     ),
 ):
     """
-    📤 Upload test results from XML files.
+    📤 Upload test results from various formats.
 
-    Parse JUnit/xUnit XML files and store results in the database.
-    Supports glob patterns to upload multiple files at once.
+    Parse test result files and store in the database. Supports:
+    - JUnit/xUnit XML (pytest, JUnit, NUnit, Jest, etc.)
+    - Cucumber JSON (BDD frameworks)
+    - Playwright JSON
+
+    Format is auto-detected from file extension and content.
 
     Examples:
-        # Upload a single file
+        # Upload JUnit XML
         $ flaktor upload results.xml
 
-        # Upload multiple files
-        $ flaktor upload test-results/*.xml
+        # Upload Cucumber JSON
+        $ flaktor upload cucumber-report.json
+
+        # Upload Playwright JSON
+        $ flaktor upload playwright-report.json --format playwright
 
         # Upload with metadata
         $ flaktor upload results.xml --branch main --commit abc123
@@ -1083,14 +1103,19 @@ def upload(
         )
         raise typer.Exit(code=1)
 
-    # Filter to only existing XML files
-    xml_files = [f for f in all_files if f.exists() and f.suffix.lower() == ".xml"]
+    # Filter to only existing files with supported extensions
+    supported_extensions = {".xml", ".json"}
+    valid_files = [
+        f for f in all_files
+        if f.exists() and f.suffix.lower() in supported_extensions
+    ]
 
-    if not xml_files:
+    if not valid_files:
         console.print(
             Panel.fit(
-                "[bold red]❌ No valid XML files found[/bold red]\n\n"
-                f"Found {len(all_files)} file(s), but none are existing XML files.",
+                "[bold red]❌ No valid test result files found[/bold red]\n\n"
+                f"Found {len(all_files)} file(s), but none are .xml or .json files.\n\n"
+                f"Supported formats: {', '.join(SUPPORTED_FORMATS)}",
                 border_style="red",
                 title="Error"
             )
@@ -1098,24 +1123,32 @@ def upload(
         raise typer.Exit(code=1)
 
     try:
-        with console.status(f"[bold blue]Parsing {len(xml_files)} file(s)...", spinner="dots"):
-            if len(xml_files) == 1:
-                parsed = parse_junit_xml(
-                    xml_files[0],
-                    run_id=run_id,
-                    branch=branch,
-                    commit_hash=commit,
-                    environment=environment,
-                )
-                parse_errors: List[str] = []
-            else:
-                parsed, parse_errors = parse_multiple_files(
-                    xml_files,
-                    run_id=run_id,
-                    branch=branch,
-                    commit_hash=commit,
-                    environment=environment,
-                )
+        parse_errors: List[str] = []
+        all_results = []
+        detected_format = None
+
+        with console.status(f"[bold blue]Parsing {len(valid_files)} file(s)...", spinner="dots"):
+            for file_path in valid_files:
+                try:
+                    # Detect or use specified format
+                    file_format = format
+                    if file_format is None:
+                        file_format = detect_format(file_path)
+
+                    if detected_format is None:
+                        detected_format = file_format
+
+                    parsed = parse_test_report(
+                        file_path,
+                        format=file_format,
+                        run_id=run_id,
+                        branch=branch,
+                        commit_hash=commit,
+                        environment=environment,
+                    )
+                    all_results.append(parsed)
+                except ParserError as e:
+                    parse_errors.append(str(e))
 
         # Show parse errors if any
         if parse_errors:
@@ -1123,11 +1156,52 @@ def upload(
             for err in parse_errors:
                 console.print(f"[yellow]⚠️  {err}[/yellow]")
 
+        if not all_results:
+            console.print(
+                Panel.fit(
+                    "[bold red]❌ Failed to parse any files[/bold red]\n\n"
+                    "Check the errors above for details.",
+                    border_style="red",
+                    title="Error"
+                )
+            )
+            raise typer.Exit(code=1)
+
+        # Combine results if multiple files
+        if len(all_results) == 1:
+            parsed = all_results[0]
+        else:
+            # Merge all parsed results
+            from .models import TestRun
+            import uuid as uuid_module
+
+            combined_run_id = run_id or f"run-{uuid_module.uuid4().hex[:12]}"
+            combined_results = []
+            for p in all_results:
+                combined_results.extend(p.results)
+
+            parsed = type(all_results[0])(
+                test_run=TestRun(
+                    run_id=combined_run_id,
+                    timestamp=min(p.test_run.timestamp for p in all_results),
+                    branch=branch,
+                    commit_hash=commit,
+                    environment=environment,
+                ),
+                results=combined_results,
+                total_tests=sum(p.total_tests for p in all_results),
+                passed=sum(p.passed for p in all_results),
+                failed=sum(p.failed for p in all_results),
+                skipped=sum(p.skipped for p in all_results),
+                errors=sum(p.errors for p in all_results),
+                total_duration=sum(p.total_duration for p in all_results),
+            )
+
         if parsed.total_tests == 0:
             console.print(
                 Panel.fit(
                     "[bold yellow]⚠️  No test cases found[/bold yellow]\n\n"
-                    "The XML file(s) were parsed but contained no test cases.",
+                    "The file(s) were parsed but contained no test cases.",
                     border_style="yellow",
                     title="Warning"
                 )
@@ -1153,11 +1227,14 @@ def upload(
 
         status_line = ", ".join(status_parts) if status_parts else "No results"
 
+        format_display = detected_format.upper() if detected_format else "auto"
+
         console.print()
         console.print(
             Panel.fit(
                 f"[bold green]✅ Upload successful![/bold green]\n\n"
-                f"📁 Files processed: [cyan]{len(xml_files)}[/cyan]\n"
+                f"📁 Files processed: [cyan]{len(valid_files)}[/cyan]\n"
+                f"📋 Format: [cyan]{format_display}[/cyan]\n"
                 f"🏃 Run ID: [cyan]{parsed.test_run.run_id}[/cyan]\n"
                 f"🧪 Tests: {status_line}\n"
                 f"⏱️  Duration: [cyan]{parsed.total_duration:.2f}s[/cyan]\n"
