@@ -22,6 +22,17 @@ from .models import TestResult, TestRun, TestStatus
 # Supported file formats
 SUPPORTED_FORMATS = ["junit", "cucumber", "playwright"]
 
+# Hardened XML parser: disables external entity resolution and network
+# access to prevent XXE (XML external entity) attacks from untrusted
+# test report files.
+_XML_PARSER = etree.XMLParser(
+    resolve_entities=False,
+    no_network=True,
+    dtd_validation=False,
+    load_dtd=False,
+    huge_tree=False,
+)
+
 
 class ParserError(Exception):
     """Custom exception for parsing errors with helpful context."""
@@ -68,7 +79,7 @@ def parse_junit_xml(
         raise ParserError(f"File not found: {file_path}")
 
     try:
-        tree = etree.parse(str(file_path))
+        tree = etree.parse(str(file_path), parser=_XML_PARSER)
         root = tree.getroot()
     except etree.XMLSyntaxError as e:
         raise ParserError(f"Invalid XML syntax in {file_path}: {e}")

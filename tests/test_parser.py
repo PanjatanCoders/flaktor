@@ -193,6 +193,67 @@ class TestParseJunitXml:
         with pytest.raises(ParserError, match="Invalid XML syntax"):
             parse_junit_xml(xml_file)
 
+    def test_parse_rejects_external_entity_file_read(self, tmp_path: Path):
+        """A SYSTEM entity pointing at a local file must never be resolved.
+
+        Modern libxml2 already refuses external SYSTEM entities by default
+        (it raises rather than resolving), so this mainly guards against
+        that default changing or differing across environments.
+        """
+        secret_file = tmp_path / "secret.txt"
+        secret_file.write_text("super-secret-contents")
+
+        xml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE testsuite [
+            <!ENTITY xxe SYSTEM "file://{secret_file}">
+        ]>
+        <testsuite name="test_suite" tests="1">
+            <testcase name="test_one" classname="TestClass" time="0.1">
+                <failure>&xxe;</failure>
+            </testcase>
+        </testsuite>
+        """
+        xml_file = tmp_path / "results.xml"
+        xml_file.write_text(xml_content)
+
+        try:
+            result = parse_junit_xml(xml_file)
+        except ParserError:
+            return  # Refusing to parse is also an acceptable, safe outcome
+
+        for test_result in result.results:
+            assert "super-secret-contents" not in (test_result.failure_message or "")
+
+    def test_parse_rejects_billion_laughs_entity_expansion(self, tmp_path: Path):
+        """Internal entity expansion (the 'billion laughs' DoS) must be blocked.
+
+        Unlike external SYSTEM entities, libxml2 expands internal entities
+        by default - this only stays safe because we set resolve_entities=False.
+        """
+        xml_content = """<?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE testsuite [
+            <!ENTITY a "lol">
+            <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">
+            <!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">
+        ]>
+        <testsuite name="test_suite" tests="1">
+            <testcase name="test_one" classname="TestClass" time="0.1">
+                <failure>&c;</failure>
+            </testcase>
+        </testsuite>
+        """
+        xml_file = tmp_path / "results.xml"
+        xml_file.write_text(xml_content)
+
+        try:
+            result = parse_junit_xml(xml_file)
+        except ParserError:
+            return  # Refusing to parse is also an acceptable, safe outcome
+
+        for test_result in result.results:
+            expanded = (test_result.failure_message or "") + (test_result.stack_trace or "")
+            assert "lol" * 10 not in expanded
+
     def test_parse_unexpected_root_element(self, tmp_path: Path):
         """Test error on unexpected root element."""
         xml_content = """<?xml version="1.0" encoding="UTF-8"?>
