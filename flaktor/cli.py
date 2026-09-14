@@ -1265,6 +1265,60 @@ def upload(
         raise typer.Exit(code=1)
 
 
+@app.command()
+def mcp(
+    db_path: Optional[Path] = typer.Option(
+        None,
+        "--db",
+        "-d",
+        help="Database path (default: auto-detect)"
+    )
+):
+    """
+    🔌 Start the Flaktor MCP server (stdio transport).
+
+    Exposes flaky-test data to AI coding agents (Claude Code, Cursor, etc.)
+    as read-only tools, so an agent can check whether a failing test is a
+    known flake before debugging it as a real bug. Mutating commands
+    (upload, init, clean) stay CLI-only.
+
+    Add to your MCP client config, e.g. for Claude Code:
+        $ claude mcp add flaktor -- flaktor mcp
+
+    Example:
+        $ flaktor mcp
+    """
+    if db_path is None:
+        db_path = get_default_db_path()
+
+    if not ensure_database_exists(db_path):
+        console.print(
+            Panel.fit(
+                "[bold red]❌ Database not found[/bold red]\n\n"
+                f"Expected location: [cyan]{db_path}[/cyan]\n\n"
+                f"💡 Initialize first: [yellow]flaktor init[/yellow]",
+                border_style="red",
+                title="Not Initialized"
+            )
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        from .mcp_server import build_server
+    except ImportError:
+        console.print(
+            Panel.fit(
+                "[bold red]❌ MCP support not installed[/bold red]\n\n"
+                r"💡 Install it with: [yellow]pip install flaktor\[mcp][/yellow]",
+                border_style="red",
+                title="Missing Dependency"
+            )
+        )
+        raise typer.Exit(code=1)
+
+    build_server(db_path).run()
+
+
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,

@@ -50,6 +50,7 @@ flaktor report
 | `flaktor report` | Generate a test health report |
 | `flaktor clean` | Remove old data from the database |
 | `flaktor info` | Show database information |
+| `flaktor mcp` | Start the MCP server for AI coding agents |
 
 ## CI/CD Integration
 
@@ -78,6 +79,22 @@ See [docs/ci-cd-integration.md](docs/ci-cd-integration.md) for complete examples
 - Jenkins
 - CircleCI
 - Azure DevOps
+
+## MCP Server (for AI coding agents)
+
+Flaktor can expose its flaky-test data to AI coding agents (Claude Code, Cursor, etc.) over the [Model Context Protocol](https://modelcontextprotocol.io), so an agent can check whether a failing test is a known flake *before* debugging it as a real bug. The server is read-only — `upload`, `init`, and `clean` stay CLI-only.
+
+```bash
+pip install "flaktor[mcp]"
+```
+
+Add it to your MCP client config, e.g. for Claude Code:
+
+```bash
+claude mcp add flaktor -- flaktor mcp
+```
+
+Available tools: `list_flaky_tests`, `check_test_flakiness`, `get_test_history`, `get_test_summary`, `get_database_stats`.
 
 ## Understanding Flakiness
 
