@@ -28,16 +28,11 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      # Install your project dependencies
+      # Install Flaktor itself (this repo) plus its dev/test dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest pytest-cov
-
-      # Install Flaktor
-      - name: Install Flaktor
-        run: pip install flaktor
+          pip install -e ".[dev]"
 
       # Initialize Flaktor database (uses cache for persistence)
       - name: Restore Flaktor database

@@ -31,8 +31,9 @@ def initialized_db(db_path: Path) -> Path:
 @pytest.fixture
 def sample_xml(tmp_path: Path) -> Path:
     """Create a sample JUnit XML file."""
-    xml_content = """<?xml version="1.0" encoding="UTF-8"?>
-    <testsuite name="test_suite" tests="3" failures="1" timestamp="2026-01-15T10:00:00">
+    timestamp = datetime.now().isoformat(timespec="seconds")
+    xml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+    <testsuite name="test_suite" tests="3" failures="1" timestamp="{timestamp}">
         <testcase name="test_pass" classname="TestClass" time="0.5"/>
         <testcase name="test_fail" classname="TestClass" time="0.3">
             <failure message="AssertionError">Failed</failure>

@@ -27,7 +27,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install Flaktor
-        run: pip install flaktor
+        run: pip install .
 
       # Restore the Flaktor database from cache
       - name: Restore Flaktor database
