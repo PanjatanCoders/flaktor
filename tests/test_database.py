@@ -140,6 +140,77 @@ class TestDatabaseSchema:
         initialized_db.initialize_schema()
 
 
+class TestSchemaMigration:
+    """Tests for schema versioning and migrations."""
+
+    def test_get_schema_version_uninitialized(self, db_path: Path):
+        """Test that an uninitialized database reports version 0."""
+        db = Database(db_path)
+        db.connect()
+        try:
+            assert db.get_schema_version() == 0
+        finally:
+            db.close()
+
+    def test_get_schema_version_initialized(self, initialized_db: Database):
+        """Test that a freshly initialized database reports the current version."""
+        from flaktor.database import CURRENT_SCHEMA_VERSION
+
+        assert initialized_db.get_schema_version() == CURRENT_SCHEMA_VERSION
+
+    def test_get_schema_version_parses_legacy_format(self, initialized_db: Database):
+        """Test that a legacy '1.0'-style version string is parsed as an int."""
+        cursor = initialized_db.conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES ('schema_version', '1.0')"
+        )
+        initialized_db.conn.commit()
+
+        assert initialized_db.get_schema_version() == 1
+
+    def test_needs_migration_false_when_current(self, initialized_db: Database):
+        """Test that a fresh database needs no migration."""
+        assert initialized_db.needs_migration() is False
+
+    def test_migrate_noop_when_current(self, initialized_db: Database):
+        """Test that migrate() is a no-op on an up-to-date database."""
+        assert initialized_db.migrate() == []
+
+    def test_migrate_raises_on_uninitialized_database(self, db_path: Path):
+        """Test that migrate() refuses to run on an uninitialized database."""
+        db = Database(db_path)
+        db.connect()
+        try:
+            with pytest.raises(DatabaseError):
+                db.migrate()
+        finally:
+            db.close()
+
+    def test_migrate_applies_pending_migrations(self, initialized_db: Database, monkeypatch):
+        """Test that migrate() applies and records a pending migration."""
+        import flaktor.database as database_module
+
+        def _add_marker_column(cursor):
+            cursor.execute("ALTER TABLE metadata ADD COLUMN marker TEXT")
+
+        monkeypatch.setattr(
+            database_module,
+            "_MIGRATIONS",
+            [(2, "add marker column", _add_marker_column)],
+        )
+
+        applied = initialized_db.migrate()
+
+        assert applied == [2]
+        assert initialized_db.get_schema_version() == 2
+        assert initialized_db.needs_migration() is False
+
+        cursor = initialized_db.conn.cursor()
+        cursor.execute("PRAGMA table_info(metadata)")
+        columns = {row[1] for row in cursor.fetchall()}
+        assert "marker" in columns
+
+
 class TestInsertTestRun:
     """Tests for inserting test runs."""
 

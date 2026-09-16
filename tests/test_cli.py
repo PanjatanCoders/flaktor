@@ -89,6 +89,13 @@ class TestInfoCommand:
         assert "Database Path" in result.stdout
         assert "Total Test Runs" in result.stdout
 
+    def test_info_shows_schema_version(self, initialized_db: Path):
+        """Test info command shows the schema version."""
+        result = runner.invoke(app, ["info", "--db", str(initialized_db)])
+
+        assert result.exit_code == 0
+        assert "Schema Version" in result.stdout
+
     def test_info_database_not_found(self, tmp_path: Path):
         """Test info with non-existent database."""
         db_path = tmp_path / "nonexistent.db"
@@ -364,6 +371,45 @@ class TestExportCommand:
         assert result.exit_code == 0
         assert "No data to export" in result.stdout
         assert not output_file.exists()
+
+
+class TestMigrateCommand:
+    """Tests for the migrate command."""
+
+    def test_migrate_already_up_to_date(self, initialized_db: Path):
+        """Test migrate on a database that's already current."""
+        result = runner.invoke(app, ["migrate", "--db", str(initialized_db)])
+
+        assert result.exit_code == 0
+        assert "already up to date" in result.stdout
+
+    def test_migrate_database_not_found(self, tmp_path: Path):
+        """Test migrate with non-existent database."""
+        db_path = tmp_path / "nonexistent.db"
+
+        result = runner.invoke(app, ["migrate", "--db", str(db_path)])
+
+        assert result.exit_code == 1
+        assert "Database not found" in result.stdout
+
+    def test_migrate_applies_pending_migration(self, initialized_db: Path, monkeypatch):
+        """Test migrate applies a pending migration and reports it."""
+        import flaktor.database as database_module
+
+        def _add_marker_column(cursor):
+            cursor.execute("ALTER TABLE metadata ADD COLUMN marker TEXT")
+
+        monkeypatch.setattr(
+            database_module,
+            "_MIGRATIONS",
+            [(2, "add marker column", _add_marker_column)],
+        )
+
+        result = runner.invoke(app, ["migrate", "--db", str(initialized_db)])
+
+        assert result.exit_code == 0
+        assert "Migration complete" in result.stdout
+        assert "v2" in result.stdout
 
 
 class TestCleanCommand:

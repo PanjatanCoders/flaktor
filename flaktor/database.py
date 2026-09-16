@@ -6,7 +6,7 @@ Handles all SQLite operations with a focus on reliability and helpful error mess
 
 import sqlite3
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Callable, Optional, List, Tuple
 from datetime import datetime
 import json
 
@@ -16,6 +16,21 @@ from .models import TestRun, TestResult, TestStatus
 class DatabaseError(Exception):
     """Custom exception for database operations with helpful context."""
     pass
+
+
+# The schema version a fresh `initialize_schema()` produces. To evolve the
+# schema, append (target_version, description, migration_fn) to _MIGRATIONS
+# below - migrate() applies pending entries in order. The "latest" version
+# (see latest_schema_version()) is always derived from this list, so it
+# can't drift out of sync with the constant below.
+CURRENT_SCHEMA_VERSION = 1
+
+_MIGRATIONS: List[Tuple[int, str, Callable[[sqlite3.Cursor], None]]] = []
+
+
+def latest_schema_version() -> int:
+    """The newest schema version known to this build (baseline + migrations)."""
+    return max([CURRENT_SCHEMA_VERSION] + [version for version, _, _ in _MIGRATIONS])
 
 
 class Database:
@@ -180,7 +195,85 @@ class Database:
                 f"💡 This might indicate database corruption. "
                 f"Consider backing up and recreating the database."
             )
-    
+
+    def get_schema_version(self) -> int:
+        """
+        Get the database's current schema version.
+
+        Returns:
+            The schema version, or 0 if the database has not been initialized.
+        """
+        if not self.conn:
+            raise DatabaseError("Database not connected.")
+
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='metadata'"
+        )
+        if cursor.fetchone() is None:
+            return 0
+
+        cursor.execute("SELECT value FROM metadata WHERE key = 'schema_version'")
+        row = cursor.fetchone()
+        if row is None:
+            return 0
+
+        try:
+            # Older databases stored the version as "1.0"; normalize to int.
+            return int(float(row[0]))
+        except (TypeError, ValueError):
+            return 0
+
+    def needs_migration(self) -> bool:
+        """Check whether pending schema migrations exist."""
+        return self.get_schema_version() < latest_schema_version()
+
+    def migrate(self) -> List[int]:
+        """
+        Apply any pending schema migrations, in order.
+
+        Each migration runs in a single transaction; if one fails, all
+        changes from this call are rolled back and the database is left
+        untouched.
+
+        Returns:
+            The list of versions applied, in order (empty if already current).
+        """
+        if not self.conn:
+            raise DatabaseError("Database not connected.")
+
+        current = self.get_schema_version()
+        if current == 0:
+            raise DatabaseError(
+                "Database not initialized.\n"
+                "💡 Run first: flaktor init"
+            )
+
+        applied: List[int] = []
+        cursor = self.conn.cursor()
+
+        try:
+            for target_version, _description, migration_fn in _MIGRATIONS:
+                if target_version <= current:
+                    continue
+                migration_fn(cursor)
+                cursor.execute(
+                    "INSERT OR REPLACE INTO metadata (key, value) VALUES ('schema_version', ?)",
+                    (str(target_version),)
+                )
+                current = target_version
+                applied.append(target_version)
+
+            self.conn.commit()
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            raise DatabaseError(
+                f"Migration failed: {e}\n"
+                f"💡 No changes were applied (migration rolled back safely)."
+            )
+
+        return applied
+
     def insert_test_run(self, test_run: TestRun) -> None:
         """
         Insert a new test run record.

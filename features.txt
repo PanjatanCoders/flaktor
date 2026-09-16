@@ -7,7 +7,6 @@ Webhook notifications - Send alerts when new flaky tests are detected
 HTML report generation - Generate beautiful HTML reports
 Test tagging/categorization - Group tests by tags or categories
 Performance tracking - Track test duration trends, detect slowdowns
-Database migration support - Handle schema upgrades gracefully
 Config file support - .flaktorrc for default settings
 
 

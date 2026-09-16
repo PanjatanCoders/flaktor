@@ -51,6 +51,7 @@ flaktor report
 | `flaktor export --output <file>` | Export test data to JSON or CSV |
 | `flaktor clean` | Remove old data from the database |
 | `flaktor info` | Show database information |
+| `flaktor migrate` | Apply pending database schema migrations |
 | `flaktor mcp` | Start the MCP server for AI coding agents |
 
 ## CI/CD Integration

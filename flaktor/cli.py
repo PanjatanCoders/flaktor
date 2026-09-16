@@ -15,7 +15,7 @@ import csv
 import glob as glob_module
 import json
 
-from .database import Database, DatabaseError
+from .database import Database, DatabaseError, latest_schema_version
 from .parser import (
     parse_junit_xml,
     parse_multiple_files,
@@ -221,18 +221,27 @@ def info(
     try:
         with Database(db_path) as db:
             stats = db.get_database_stats()
-        
+            schema_version = db.get_schema_version()
+
         # Create info table
         table = Table(show_header=False, box=None, padding=(0, 2))
         table.add_column("Key", style="cyan")
         table.add_column("Value", style="green")
-        
+
         table.add_row("📍 Database Path", str(db_path))
         table.add_row("📦 Database Size", f"{stats['database_size_mb']} MB")
         table.add_row("🏃 Total Test Runs", f"{stats['total_runs']:,}")
         table.add_row("📝 Total Test Results", f"{stats['total_results']:,}")
         table.add_row("🧪 Unique Tests", f"{stats['unique_tests']:,}")
-        
+        latest_version = latest_schema_version()
+        if schema_version < latest_version:
+            table.add_row(
+                "🔧 Schema Version",
+                f"[yellow]{schema_version} (update available: v{latest_version})[/yellow]"
+            )
+        else:
+            table.add_row("🔧 Schema Version", str(schema_version))
+
         if stats['earliest_run']:
             table.add_row("📅 Earliest Run", stats['earliest_run'])
             table.add_row("📅 Latest Run", stats['latest_run'])
@@ -249,11 +258,85 @@ def info(
                 "[dim]💡 No test data yet. Upload results with:[/dim] "
                 "[cyan]flaktor upload path/to/results.xml[/cyan]"
             )
-        
+
+        if schema_version < latest_version:
+            console.print(
+                "[dim]💡 A schema update is available. Run:[/dim] "
+                "[cyan]flaktor migrate[/cyan]"
+            )
+
     except DatabaseError as e:
         console.print(
             Panel.fit(
                 f"[bold red]❌ Failed to read database[/bold red]\n\n{str(e)}",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def migrate(
+    db_path: Optional[Path] = typer.Option(
+        None,
+        "--db",
+        "-d",
+        help="Database path (default: auto-detect)"
+    ),
+):
+    """
+    🔧 Apply pending database schema migrations.
+
+    Safe to run anytime - it's a no-op if the database is already on the
+    latest schema version. Run this after upgrading Flaktor if a command
+    or `flaktor info` reports that an update is available.
+
+    Example:
+        $ flaktor migrate
+    """
+    if db_path is None:
+        db_path = get_default_db_path()
+
+    if not db_path.exists():
+        console.print(
+            Panel.fit(
+                "[bold red]❌ Database not found[/bold red]\n\n"
+                f"Expected location: [cyan]{db_path}[/cyan]\n\n"
+                f"💡 Initialize first: [yellow]flaktor init[/yellow]",
+                border_style="red",
+                title="Not Initialized"
+            )
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        with Database(db_path) as db:
+            before = db.get_schema_version()
+
+            if not db.needs_migration():
+                console.print(
+                    f"[green]✅ Database already up to date[/green] "
+                    f"[dim](schema version {before})[/dim]"
+                )
+                return
+
+            applied = db.migrate()
+
+        console.print(
+            Panel.fit(
+                f"[bold green]✨ Migration complete![/bold green]\n\n"
+                f"Schema version: [cyan]{before}[/cyan] → [green]{applied[-1]}[/green]\n"
+                f"Applied: {', '.join(f'v{v}' for v in applied)}",
+                border_style="green",
+                title="Migrated"
+            )
+        )
+
+    except DatabaseError as e:
+        console.print(
+            Panel.fit(
+                f"[bold red]❌ Migration failed[/bold red]\n\n{str(e)}",
                 border_style="red",
                 title="Error"
             )
