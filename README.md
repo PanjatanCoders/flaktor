@@ -48,6 +48,7 @@ flaktor report
 | `flaktor list --flaky` | Show only flaky tests |
 | `flaktor history <test>` | View detailed history for a test |
 | `flaktor report` | Generate a test health report |
+| `flaktor export --output <file>` | Export test data to JSON or CSV |
 | `flaktor clean` | Remove old data from the database |
 | `flaktor info` | Show database information |
 | `flaktor mcp` | Start the MCP server for AI coding agents |

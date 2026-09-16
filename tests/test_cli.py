@@ -1,5 +1,7 @@
 """Tests for the CLI module."""
 
+import csv
+import json
 import pytest
 from pathlib import Path
 from typer.testing import CliRunner
@@ -259,6 +261,109 @@ class TestReportCommand:
 
         assert result.exit_code == 0
         assert "Last 7 days" in result.stdout
+
+
+class TestExportCommand:
+    """Tests for the export command."""
+
+    def test_export_summary_json(self, initialized_db: Path, sample_xml: Path, tmp_path: Path):
+        """Test exporting the test summary as JSON."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+        output_file = tmp_path / "tests.json"
+
+        result = runner.invoke(
+            app, ["export", "--db", str(initialized_db), "--output", str(output_file)]
+        )
+
+        assert result.exit_code == 0
+        assert output_file.exists()
+
+        data = json.loads(output_file.read_text())
+        assert len(data) == 3
+        assert {row["test_name"] for row in data} == {
+            "TestClass.test_pass", "TestClass.test_fail", "TestClass.test_skip"
+        }
+
+    def test_export_summary_csv(self, initialized_db: Path, sample_xml: Path, tmp_path: Path):
+        """Test exporting the test summary as CSV."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+        output_file = tmp_path / "tests.csv"
+
+        result = runner.invoke(
+            app, ["export", "--db", str(initialized_db), "--output", str(output_file)]
+        )
+
+        assert result.exit_code == 0
+        rows = list(csv.DictReader(output_file.open()))
+        assert len(rows) == 3
+        assert "test_name" in rows[0]
+
+    def test_export_format_overrides_extension(self, initialized_db: Path, sample_xml: Path, tmp_path: Path):
+        """Test that --format overrides the inferred extension."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+        output_file = tmp_path / "tests.txt"
+
+        result = runner.invoke(
+            app,
+            ["export", "--db", str(initialized_db), "--output", str(output_file), "--format", "csv"],
+        )
+
+        assert result.exit_code == 0
+        rows = list(csv.DictReader(output_file.open()))
+        assert len(rows) == 3
+
+    def test_export_single_test_history(self, initialized_db: Path, sample_xml: Path, tmp_path: Path):
+        """Test exporting raw history for a single test."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+        output_file = tmp_path / "history.json"
+
+        result = runner.invoke(
+            app,
+            ["export", "--db", str(initialized_db), "--output", str(output_file), "--test", "test_pass"],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(output_file.read_text())
+        assert len(data) == 1
+        assert data[0]["test_name"] == "TestClass.test_pass"
+        assert data[0]["status"] == "passed"
+
+    def test_export_unknown_test_fails(self, initialized_db: Path, sample_xml: Path, tmp_path: Path):
+        """Test exporting a nonexistent test fails cleanly."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+        output_file = tmp_path / "history.json"
+
+        result = runner.invoke(
+            app,
+            ["export", "--db", str(initialized_db), "--output", str(output_file), "--test", "nonexistent_xyz"],
+        )
+
+        assert result.exit_code == 1
+        assert "No tests found" in result.stdout
+        assert not output_file.exists()
+
+    def test_export_unsupported_format(self, initialized_db: Path, tmp_path: Path):
+        """Test that an unsupported format is rejected."""
+        output_file = tmp_path / "tests.yaml"
+
+        result = runner.invoke(
+            app, ["export", "--db", str(initialized_db), "--output", str(output_file)]
+        )
+
+        assert result.exit_code == 1
+        assert "Unsupported format" in result.stdout
+
+    def test_export_empty_database(self, initialized_db: Path, tmp_path: Path):
+        """Test exporting an empty database produces no file."""
+        output_file = tmp_path / "tests.json"
+
+        result = runner.invoke(
+            app, ["export", "--db", str(initialized_db), "--output", str(output_file)]
+        )
+
+        assert result.exit_code == 0
+        assert "No data to export" in result.stdout
+        assert not output_file.exists()
 
 
 class TestCleanCommand:

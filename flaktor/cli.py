@@ -11,7 +11,9 @@ from rich.table import Table
 from pathlib import Path
 from typing import Optional, List
 from datetime import datetime
+import csv
 import glob as glob_module
+import json
 
 from .database import Database, DatabaseError
 from .parser import (
@@ -990,6 +992,172 @@ def report(
             console.print()
             console.print(Panel(report_content, title="Test Health Report", border_style="blue"))
             console.print()
+
+    except DatabaseError as e:
+        console.print(
+            Panel.fit(
+                f"[bold red]❌ Database error[/bold red]\n\n{str(e)}",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def export(
+    db_path: Optional[Path] = typer.Option(
+        None,
+        "--db",
+        "-d",
+        help="Database path (default: auto-detect)"
+    ),
+    output: Path = typer.Option(
+        ...,
+        "--output",
+        "-o",
+        help="Output file path"
+    ),
+    format: Optional[str] = typer.Option(
+        None,
+        "--format",
+        "-f",
+        help="Export format: json or csv (default: inferred from --output extension)"
+    ),
+    test_name: Optional[str] = typer.Option(
+        None,
+        "--test",
+        "-t",
+        help="Export raw run history for a single test instead of the summary"
+    ),
+    days: int = typer.Option(
+        30,
+        "--days",
+        help="Number of days to include (ignored with --test)"
+    ),
+    limit: int = typer.Option(
+        1000,
+        "--limit",
+        "-n",
+        help="Maximum rows to export when using --test"
+    ),
+):
+    """
+    📤 Export test data to JSON or CSV for external analysis.
+
+    Exports a per-test summary by default, or the raw run history for a
+    single test when --test is given. Format is inferred from the
+    --output file extension unless --format is set.
+
+    Examples:
+        # Export a summary of all tests
+        $ flaktor export --output tests.json
+
+        # Export as CSV explicitly
+        $ flaktor export --output tests.csv --format csv
+
+        # Export raw run history for one test
+        $ flaktor export --test test_login --output test_login_history.json
+    """
+    if db_path is None:
+        db_path = get_default_db_path()
+
+    if not ensure_database_exists(db_path):
+        console.print(
+            Panel.fit(
+                "[bold red]❌ Database not initialized[/bold red]\n\n"
+                f"💡 Run first: [yellow]flaktor init[/yellow]",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+    export_format = (format or output.suffix.lstrip(".") or "json").lower()
+    if export_format not in ("json", "csv"):
+        console.print(
+            Panel.fit(
+                f"[bold red]❌ Unsupported format '{export_format}'[/bold red]\n\n"
+                f"💡 Use [cyan]--format json[/cyan] or [cyan]--format csv[/cyan]",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        with Database(db_path) as db:
+            if test_name:
+                all_tests = db.get_all_test_names()
+                exact_match = test_name if test_name in all_tests else None
+                partial_matches = [t for t in all_tests if test_name.lower() in t.lower()]
+
+                if exact_match:
+                    selected_test = exact_match
+                elif len(partial_matches) == 1:
+                    selected_test = partial_matches[0]
+                elif len(partial_matches) > 1:
+                    console.print(
+                        Panel.fit(
+                            f"[yellow]Multiple tests match '{test_name}'[/yellow]\n\n"
+                            f"Found {len(partial_matches)} matching tests. "
+                            f"Please be more specific.",
+                            border_style="yellow",
+                            title="Multiple Matches"
+                        )
+                    )
+                    raise typer.Exit(code=1)
+                else:
+                    console.print(
+                        Panel.fit(
+                            f"[bold red]❌ No tests found matching '{test_name}'[/bold red]\n\n"
+                            f"💡 Use [cyan]flaktor list[/cyan] to see all available tests",
+                            border_style="red",
+                            title="Not Found"
+                        )
+                    )
+                    raise typer.Exit(code=1)
+
+                rows = db.get_test_history(selected_test, limit=limit)
+                records = [
+                    {
+                        "test_name": r[0],
+                        "status": r[1],
+                        "duration": r[2],
+                        "run_id": r[3],
+                        "timestamp": r[4],
+                        "failure_message": r[5],
+                        "failure_type": r[6],
+                    }
+                    for r in rows
+                ]
+            else:
+                records = db.get_test_summary(lookback_days=days)
+
+        if not records:
+            console.print(
+                Panel.fit(
+                    "[yellow]No data to export[/yellow]",
+                    border_style="yellow",
+                    title="Empty"
+                )
+            )
+            return
+
+        output.parent.mkdir(parents=True, exist_ok=True)
+
+        if export_format == "json":
+            output.write_text(json.dumps(records, indent=2))
+        else:
+            with output.open("w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=list(records[0].keys()))
+                writer.writeheader()
+                writer.writerows(records)
+
+        console.print(
+            f"[green]✅ Exported {len(records)} record(s) to {output}[/green] "
+            f"[dim]({export_format.upper()})[/dim]"
+        )
 
     except DatabaseError as e:
         console.print(

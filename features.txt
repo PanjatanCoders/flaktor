@@ -1,6 +1,5 @@
 Potential next features to consider:
 
-Export to JSON/CSV - Export test data for external analysis
 Compare command - Compare flakiness between branches
 Quarantine support - Mark tests as quarantined/ignored
 Trend analysis - Show flakiness trends over time (improving/worsening)
