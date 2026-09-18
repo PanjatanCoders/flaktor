@@ -95,6 +95,27 @@ def build_server(db_path: Path) -> MCPServer:
             return db.get_quarantined_tests()
 
     @server.tool()
+    def list_trending_tests(
+        days: int = 30,
+        min_runs: int = 3,
+        worsening_only: bool = False,
+    ) -> list[dict]:
+        """
+        Show flakiness trend per test: current window vs the prior window
+        of equal length. Useful for telling a test that's newly regressing
+        apart from one that's long-standing and already known.
+
+        Args:
+            days: Size of each comparison window, in days.
+            min_runs: Minimum runs (in each window) for a test to be evaluated.
+            worsening_only: Only return tests trending worse.
+        """
+        with Database(db_path) as db:
+            return db.get_trending_tests(
+                days=days, min_runs=min_runs, worsening_only=worsening_only,
+            )
+
+    @server.tool()
     def get_test_history(test_name: str, limit: int = 30) -> list[dict]:
         """
         Get recent pass/fail history for a specific test, newest first.

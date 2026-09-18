@@ -525,6 +525,100 @@ class TestQuarantine:
         assert initialized_db.get_quarantined_tests() == []
 
 
+class TestGetTrendingTests:
+    """Tests for flakiness trend detection."""
+
+    def _insert_result(
+        self, db: Database, test_name: str, status: TestStatus, days_ago: int, run_id: str
+    ):
+        timestamp = datetime.now() - timedelta(days=days_ago)
+        db.insert_test_run(TestRun(run_id=run_id, timestamp=timestamp))
+        db.insert_test_results([
+            TestResult(
+                test_name=test_name,
+                status=status,
+                duration=0.1,
+                run_id=run_id,
+                timestamp=timestamp,
+            )
+        ])
+
+    def test_detects_worsening_test(self, initialized_db: Database):
+        """Test a test that was stable but is now flaky shows as worsening."""
+        for i in range(5):
+            self._insert_result(initialized_db, "test_a", TestStatus.PASSED, 31 + i, f"prev-{i}")
+
+        for i in range(6):
+            status = TestStatus.PASSED if i % 2 == 0 else TestStatus.FAILED
+            self._insert_result(initialized_db, "test_a", status, i, f"cur-{i}")
+
+        trends = initialized_db.get_trending_tests(days=30, min_runs=5)
+
+        assert len(trends) == 1
+        assert trends[0]["test_name"] == "test_a"
+        assert trends[0]["trend"] == "worsening"
+        assert trends[0]["flip_rate_delta"] > 0
+
+    def test_detects_improving_test(self, initialized_db: Database):
+        """Test a test that was flaky but is now stable shows as improving."""
+        for i in range(6):
+            status = TestStatus.PASSED if i % 2 == 0 else TestStatus.FAILED
+            self._insert_result(initialized_db, "test_b", status, 31 + i, f"prev-{i}")
+
+        for i in range(5):
+            self._insert_result(initialized_db, "test_b", TestStatus.PASSED, i, f"cur-{i}")
+
+        trends = initialized_db.get_trending_tests(days=30, min_runs=5)
+
+        assert len(trends) == 1
+        assert trends[0]["trend"] == "improving"
+        assert trends[0]["flip_rate_delta"] < 0
+
+    def test_new_test_has_no_previous_window(self, initialized_db: Database):
+        """Test a test with only current-window data is marked new."""
+        for i in range(5):
+            self._insert_result(initialized_db, "test_new", TestStatus.PASSED, i, f"cur-{i}")
+
+        trends = initialized_db.get_trending_tests(days=30, min_runs=5)
+
+        assert len(trends) == 1
+        assert trends[0]["trend"] == "new"
+        assert trends[0]["flip_rate_delta"] is None
+        assert trends[0]["previous"] is None
+
+    def test_respects_min_runs(self, initialized_db: Database):
+        """Test that tests below min_runs in the current window are excluded."""
+        for i in range(2):
+            self._insert_result(initialized_db, "test_few", TestStatus.PASSED, i, f"cur-{i}")
+
+        trends = initialized_db.get_trending_tests(days=30, min_runs=5)
+
+        assert trends == []
+
+    def test_worsening_only_filter(self, initialized_db: Database):
+        """Test that worsening_only excludes stable/improving/new tests."""
+        for i in range(5):
+            self._insert_result(
+                initialized_db, "test_stable", TestStatus.PASSED, 31 + i, f"stable-prev-{i}"
+            )
+            self._insert_result(
+                initialized_db, "test_stable", TestStatus.PASSED, i, f"stable-cur-{i}"
+            )
+
+        for i in range(5):
+            self._insert_result(
+                initialized_db, "test_worse", TestStatus.PASSED, 31 + i, f"worse-prev-{i}"
+            )
+        for i in range(6):
+            status = TestStatus.PASSED if i % 2 == 0 else TestStatus.FAILED
+            self._insert_result(initialized_db, "test_worse", status, i, f"worse-cur-{i}")
+
+        trends = initialized_db.get_trending_tests(days=30, min_runs=5, worsening_only=True)
+
+        assert len(trends) == 1
+        assert trends[0]["test_name"] == "test_worse"
+
+
 class TestGetTestSummary:
     """Tests for test summary."""
 

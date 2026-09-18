@@ -7,7 +7,7 @@ Handles all SQLite operations with a focus on reliability and helpful error mess
 import sqlite3
 from pathlib import Path
 from typing import Callable, Optional, List, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 
 from .models import TestRun, TestResult, TestStatus
@@ -699,6 +699,125 @@ class Database:
             }
 
         return stats
+
+    def get_test_window_stats(self, since_days: int, until_days: int = 0) -> dict:
+        """
+        Get per-test statistics for results within a days-ago window.
+
+        The window covers results from `since_days` ago (the older bound)
+        up to `until_days` ago (the newer bound, default now).
+
+        Args:
+            since_days: Older bound of the window, in days ago
+            until_days: Newer bound of the window, in days ago (default 0 = now)
+
+        Returns:
+            Dict mapping test_name -> stats (total_runs, passed, failed,
+            pass_rate, flip_rate, avg_duration)
+        """
+        if not self.conn:
+            raise DatabaseError("Database not connected.")
+
+        # Bounds are computed from Python's clock (not SQLite's datetime('now'),
+        # which is UTC) since timestamps are stored via datetime.now().isoformat()
+        # in local time - mixing the two would skew a two-sided window by the
+        # local UTC offset.
+        now = datetime.now()
+        since_cutoff = (now - timedelta(days=since_days)).isoformat()
+        until_cutoff = (now - timedelta(days=until_days)).isoformat()
+
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT
+                test_name,
+                COUNT(*) as total_runs,
+                SUM(CASE WHEN status = 'passed' THEN 1 ELSE 0 END) as passed,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+                SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors,
+                AVG(duration) as avg_duration
+            FROM test_results
+            WHERE timestamp >= ? AND timestamp < ?
+            GROUP BY test_name
+        """, (since_cutoff, until_cutoff))
+
+        stats = {}
+        for row in cursor.fetchall():
+            test_name, total, passed, failed, errors, avg_duration = row
+            failed_total = failed + errors
+            pass_rate = passed / total if total else 0.0
+            fail_rate = failed_total / total if total else 0.0
+            flip_rate = 2 * min(pass_rate, fail_rate) if total > 1 else 0.0
+
+            stats[test_name] = {
+                "total_runs": total,
+                "passed": passed,
+                "failed": failed_total,
+                "pass_rate": round(pass_rate, 3),
+                "flip_rate": round(flip_rate, 3),
+                "avg_duration": round(avg_duration, 3) if avg_duration else 0.0,
+            }
+
+        return stats
+
+    def get_trending_tests(
+        self,
+        days: int = 30,
+        min_runs: int = 3,
+        worsening_only: bool = False,
+    ) -> List[dict]:
+        """
+        Compare each test's flakiness in the current window against the
+        prior window of equal length, to surface tests getting better or
+        worse rather than just their current snapshot.
+
+        Args:
+            days: Size of each comparison window, in days
+            min_runs: Minimum runs (in each window) for a test to be evaluated
+            worsening_only: If True, only return tests trending worse
+
+        Returns:
+            List of dicts with test_name, trend ("worsening"/"improving"/
+            "stable"/"new"), flip_rate_delta (None for new tests), and the
+            current/previous window stats. Sorted worst-trending first.
+        """
+        if not self.conn:
+            raise DatabaseError("Database not connected.")
+
+        current = self.get_test_window_stats(since_days=days, until_days=0)
+        previous = self.get_test_window_stats(since_days=days * 2, until_days=days)
+
+        results = []
+        for test_name, cur in current.items():
+            if cur["total_runs"] < min_runs:
+                continue
+
+            prev = previous.get(test_name)
+            if prev and prev["total_runs"] >= min_runs:
+                delta = round(cur["flip_rate"] - prev["flip_rate"], 3)
+                if delta > 1e-9:
+                    trend = "worsening"
+                elif delta < -1e-9:
+                    trend = "improving"
+                else:
+                    trend = "stable"
+            else:
+                prev = None
+                delta = None
+                trend = "new"
+
+            if worsening_only and trend != "worsening":
+                continue
+
+            results.append({
+                "test_name": test_name,
+                "trend": trend,
+                "flip_rate_delta": delta,
+                "current": cur,
+                "previous": prev,
+            })
+
+        results.sort(key=lambda r: (r["flip_rate_delta"] is None, -(r["flip_rate_delta"] or 0)))
+        return results
 
     def quarantine_test(self, test_name: str, reason: Optional[str] = None) -> None:
         """

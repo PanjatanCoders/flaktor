@@ -1,6 +1,5 @@
 Potential next features to consider:
 
-Trend analysis - Show flakiness trends over time (improving/worsening)
 Webhook notifications - Send alerts when new flaky tests are detected
 HTML report generation - Generate beautiful HTML reports
 Test tagging/categorization - Group tests by tags or categories

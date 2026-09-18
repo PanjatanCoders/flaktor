@@ -5,7 +5,7 @@ import json
 import pytest
 from pathlib import Path
 from typer.testing import CliRunner
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from flaktor.cli import app
 from flaktor.database import Database
@@ -512,6 +512,89 @@ class TestCompareCommand:
 
         assert result.exit_code == 0
         assert "No differences found" in result.stdout
+
+
+class TestTrendCommand:
+    """Tests for the trend command."""
+
+    def _upload_at(
+        self, db_path: Path, tmp_path: Path, name: str, failed: bool, days_ago: int, seq: int
+    ):
+        """Upload a single result for `name` timestamped `days_ago` days in the past."""
+        timestamp = (datetime.now() - timedelta(days=days_ago)).isoformat(timespec="seconds")
+        xml_file = tmp_path / f"{name}-{seq}.xml"
+        failure_block = (
+            '<failure message="boom">boom</failure>' if failed else ""
+        )
+        xml_file.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
+        <testsuite name="s" tests="1" failures="{1 if failed else 0}" timestamp="{timestamp}">
+            <testcase name="{name}" classname="T" time="0.1">{failure_block}</testcase>
+        </testsuite>
+        """)
+        runner.invoke(app, ["upload", str(xml_file), "--db", str(db_path)])
+
+    def test_trend_database_not_initialized(self, tmp_path: Path):
+        """Test trend with uninitialized database."""
+        db_path = tmp_path / "uninit.db"
+
+        result = runner.invoke(app, ["trend", "--db", str(db_path)])
+
+        assert result.exit_code == 1
+        assert "Database not initialized" in result.stdout
+
+    def test_trend_no_data(self, initialized_db: Path):
+        """Test trend on an empty database."""
+        result = runner.invoke(app, ["trend", "--db", str(initialized_db)])
+
+        assert result.exit_code == 0
+        assert "No trend data" in result.stdout
+
+    def test_trend_detects_worsening(self, initialized_db: Path, tmp_path: Path):
+        """Test that a test which turned flaky recently shows as worsening."""
+        for i in range(5):
+            self._upload_at(initialized_db, tmp_path, "test_x", False, 31 + i, i)
+
+        for i in range(6):
+            self._upload_at(initialized_db, tmp_path, "test_x", i % 2 == 1, i, 100 + i)
+
+        result = runner.invoke(
+            app, ["trend", "--db", str(initialized_db), "--min-runs", "5"]
+        )
+
+        assert result.exit_code == 0
+        assert "T.test_x" in result.stdout
+        assert "worsening" in result.stdout
+
+    def test_trend_worsening_only_filter(self, initialized_db: Path, tmp_path: Path):
+        """Test --worsening-only hides stable tests and keeps regressing ones."""
+        for i in range(5):
+            self._upload_at(initialized_db, tmp_path, "test_stable", False, 31 + i, i)
+            self._upload_at(initialized_db, tmp_path, "test_stable", False, i, 100 + i)
+
+        for i in range(5):
+            self._upload_at(initialized_db, tmp_path, "test_worse", False, 31 + i, 200 + i)
+        for i in range(6):
+            self._upload_at(initialized_db, tmp_path, "test_worse", i % 2 == 1, i, 300 + i)
+
+        result = runner.invoke(
+            app,
+            ["trend", "--db", str(initialized_db), "--min-runs", "5", "--worsening-only"],
+        )
+
+        assert result.exit_code == 0
+        assert "T.test_worse" in result.stdout
+        assert "T.test_stable" not in result.stdout
+
+    def test_trend_min_runs_filter(self, initialized_db: Path, tmp_path: Path):
+        """Test --min-runs excludes tests without enough history."""
+        self._upload_at(initialized_db, tmp_path, "test_rare", False, 0, 1)
+
+        result = runner.invoke(
+            app, ["trend", "--db", str(initialized_db), "--min-runs", "5"]
+        )
+
+        assert result.exit_code == 0
+        assert "No trend data" in result.stdout
 
 
 class TestExportCommand:
