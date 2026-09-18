@@ -46,6 +46,8 @@ flaktor report
 | `flaktor upload <files>` | Upload test results from XML files |
 | `flaktor list` | List tests with statistics |
 | `flaktor list --flaky` | Show only flaky tests |
+| `flaktor quarantine <test>` | Quarantine a test, excluding it from flaky detection |
+| `flaktor unquarantine <test>` | Remove a test from quarantine |
 | `flaktor history <test>` | View detailed history for a test |
 | `flaktor report` | Generate a test health report |
 | `flaktor export --output <file>` | Export test data to JSON or CSV |

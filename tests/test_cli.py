@@ -223,6 +223,144 @@ class TestListCommand:
 
         assert result.exit_code == 0
 
+    def test_list_quarantined_empty(self, initialized_db: Path):
+        """Test list --quarantined when nothing is quarantined."""
+        result = runner.invoke(
+            app, ["list", "--quarantined", "--db", str(initialized_db)]
+        )
+
+        assert result.exit_code == 0
+        assert "No quarantined tests" in result.stdout
+
+
+class TestQuarantineCommand:
+    """Tests for the quarantine and unquarantine commands."""
+
+    def test_quarantine_database_not_initialized(self, tmp_path: Path):
+        """Test quarantine with uninitialized database."""
+        db_path = tmp_path / "uninit.db"
+
+        result = runner.invoke(app, ["quarantine", "test_x", "--db", str(db_path)])
+
+        assert result.exit_code == 1
+        assert "Database not initialized" in result.stdout
+
+    def test_quarantine_test_not_found(self, initialized_db: Path, sample_xml: Path):
+        """Test quarantine with a name that matches nothing."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+
+        result = runner.invoke(
+            app, ["quarantine", "nonexistent_test", "--db", str(initialized_db)]
+        )
+
+        assert result.exit_code == 1
+        assert "No tests found matching" in result.stdout
+
+    def test_quarantine_ambiguous_match(self, initialized_db: Path, sample_xml: Path):
+        """Test quarantine with a name matching multiple tests."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+
+        result = runner.invoke(
+            app, ["quarantine", "test", "--db", str(initialized_db)]
+        )
+
+        assert result.exit_code == 1
+        assert "Multiple Matches" in result.stdout
+
+    def test_quarantine_success(self, initialized_db: Path, sample_xml: Path):
+        """Test quarantining a test with a reason, and seeing it listed."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+
+        result = runner.invoke(
+            app,
+            [
+                "quarantine", "test_fail",
+                "--db", str(initialized_db),
+                "--reason", "tracked in JIRA-123",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "Quarantined" in result.stdout
+        assert "TestClass.test_fail" in result.stdout
+
+        list_result = runner.invoke(
+            app, ["list", "--quarantined", "--db", str(initialized_db)]
+        )
+        assert "TestClass.test_fail" in list_result.stdout
+        assert "JIRA-123" in list_result.stdout
+
+    def test_unquarantine_not_found(self, initialized_db: Path):
+        """Test unquarantine when nothing is quarantined."""
+        result = runner.invoke(
+            app, ["unquarantine", "test_x", "--db", str(initialized_db)]
+        )
+
+        assert result.exit_code == 1
+        assert "No quarantined test matches" in result.stdout
+
+    def test_unquarantine_success(self, initialized_db: Path, sample_xml: Path):
+        """Test removing a test from quarantine."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+        runner.invoke(app, ["quarantine", "test_fail", "--db", str(initialized_db)])
+
+        result = runner.invoke(
+            app, ["unquarantine", "test_fail", "--db", str(initialized_db)]
+        )
+
+        assert result.exit_code == 0
+        assert "Removed from quarantine" in result.stdout
+
+        list_result = runner.invoke(
+            app, ["list", "--quarantined", "--db", str(initialized_db)]
+        )
+        assert "No quarantined tests" in list_result.stdout
+
+    def test_flaky_excludes_quarantined_by_default(self, initialized_db: Path, tmp_path: Path):
+        """Test that --flaky hides a quarantined test unless --include-quarantined is set."""
+        timestamp = datetime.now().isoformat(timespec="seconds")
+
+        pass_xml = tmp_path / "pass.xml"
+        pass_xml.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
+        <testsuite name="s" tests="1" timestamp="{timestamp}">
+            <testcase name="test_x" classname="T" time="0.1"/>
+        </testsuite>
+        """)
+
+        fail_xml = tmp_path / "fail.xml"
+        fail_xml.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
+        <testsuite name="s" tests="1" failures="1" timestamp="{timestamp}">
+            <testcase name="test_x" classname="T" time="0.1">
+                <failure message="boom">boom</failure>
+            </testcase>
+        </testsuite>
+        """)
+
+        runner.invoke(app, ["upload", str(pass_xml), "--db", str(initialized_db)])
+        runner.invoke(app, ["upload", str(fail_xml), "--db", str(initialized_db)])
+
+        result = runner.invoke(
+            app, ["list", "--flaky", "--min-runs", "1", "--db", str(initialized_db)]
+        )
+        assert "T.test_x" in result.stdout
+
+        runner.invoke(app, ["quarantine", "T.test_x", "--db", str(initialized_db)])
+
+        result_excluded = runner.invoke(
+            app, ["list", "--flaky", "--min-runs", "1", "--db", str(initialized_db)]
+        )
+        assert "T.test_x" not in result_excluded.stdout
+        assert "No flaky tests detected" in result_excluded.stdout
+
+        result_included = runner.invoke(
+            app,
+            [
+                "list", "--flaky", "--min-runs", "1",
+                "--include-quarantined", "--db", str(initialized_db),
+            ],
+        )
+        assert "T.test_x" in result_included.stdout
+
 
 class TestReportCommand:
     """Tests for the report command."""
@@ -505,17 +643,18 @@ class TestMigrateCommand:
         def _add_marker_column(cursor):
             cursor.execute("ALTER TABLE metadata ADD COLUMN marker TEXT")
 
+        next_version = database_module.CURRENT_SCHEMA_VERSION + 1
         monkeypatch.setattr(
             database_module,
             "_MIGRATIONS",
-            [(2, "add marker column", _add_marker_column)],
+            [(next_version, "add marker column", _add_marker_column)],
         )
 
         result = runner.invoke(app, ["migrate", "--db", str(initialized_db)])
 
         assert result.exit_code == 0
         assert "Migration complete" in result.stdout
-        assert "v2" in result.stdout
+        assert f"v{next_version}" in result.stdout
 
 
 class TestCleanCommand:

@@ -123,15 +123,18 @@ class TestDatabaseSchema:
         assert "metadata" in tables
         assert "test_runs" in tables
         assert "test_results" in tables
+        assert "quarantined_tests" in tables
 
     def test_initialize_schema_stores_version(self, initialized_db: Database):
         """Test that schema version is stored in metadata."""
+        from flaktor.database import CURRENT_SCHEMA_VERSION
+
         cursor = initialized_db.conn.cursor()
         cursor.execute("SELECT value FROM metadata WHERE key = 'schema_version'")
         result = cursor.fetchone()
 
         assert result is not None
-        assert result[0] == "1.0"
+        assert result[0] == str(CURRENT_SCHEMA_VERSION)
 
     def test_initialize_schema_idempotent(self, initialized_db: Database):
         """Test that initialize_schema can be called multiple times."""
@@ -193,16 +196,17 @@ class TestSchemaMigration:
         def _add_marker_column(cursor):
             cursor.execute("ALTER TABLE metadata ADD COLUMN marker TEXT")
 
+        next_version = database_module.CURRENT_SCHEMA_VERSION + 1
         monkeypatch.setattr(
             database_module,
             "_MIGRATIONS",
-            [(2, "add marker column", _add_marker_column)],
+            [(next_version, "add marker column", _add_marker_column)],
         )
 
         applied = initialized_db.migrate()
 
-        assert applied == [2]
-        assert initialized_db.get_schema_version() == 2
+        assert applied == [next_version]
+        assert initialized_db.get_schema_version() == next_version
         assert initialized_db.needs_migration() is False
 
         cursor = initialized_db.conn.cursor()
@@ -443,6 +447,82 @@ class TestGetFlakyTests:
         flaky = initialized_db.get_flaky_tests(min_runs=5)
 
         assert len(flaky) == 0  # Not enough runs
+
+    def test_get_flaky_tests_excludes_quarantined_by_default(self, initialized_db: Database):
+        """Test that quarantined tests are hidden from flaky results by default."""
+        for i in range(6):
+            run = TestRun(run_id=f"run-{i}", timestamp=datetime.now())
+            initialized_db.insert_test_run(run)
+
+            status = TestStatus.PASSED if i % 2 == 0 else TestStatus.FAILED
+            result = TestResult(
+                test_name="flaky_test",
+                status=status,
+                duration=0.1,
+                run_id=f"run-{i}",
+                timestamp=datetime.now(),
+            )
+            initialized_db.insert_test_results([result])
+
+        initialized_db.quarantine_test("flaky_test", reason="known flake")
+
+        assert initialized_db.get_flaky_tests(min_runs=5) == []
+
+        included = initialized_db.get_flaky_tests(min_runs=5, include_quarantined=True)
+        assert len(included) == 1
+        assert included[0]["test_name"] == "flaky_test"
+
+
+class TestQuarantine:
+    """Tests for quarantine/unquarantine and lookup methods."""
+
+    def test_quarantine_test(self, initialized_db: Database):
+        """Test quarantining a test records it with a reason."""
+        initialized_db.quarantine_test("flaky_test", reason="known flake")
+
+        assert initialized_db.is_quarantined("flaky_test") is True
+
+        rows = initialized_db.get_quarantined_tests()
+        assert len(rows) == 1
+        assert rows[0]["test_name"] == "flaky_test"
+        assert rows[0]["reason"] == "known flake"
+
+    def test_quarantine_test_without_reason(self, initialized_db: Database):
+        """Test quarantining without a reason is allowed."""
+        initialized_db.quarantine_test("flaky_test")
+
+        rows = initialized_db.get_quarantined_tests()
+        assert rows[0]["reason"] is None
+
+    def test_quarantine_test_updates_reason(self, initialized_db: Database):
+        """Test re-quarantining an already-quarantined test updates its reason."""
+        initialized_db.quarantine_test("flaky_test", reason="first reason")
+        initialized_db.quarantine_test("flaky_test", reason="updated reason")
+
+        rows = initialized_db.get_quarantined_tests()
+        assert len(rows) == 1
+        assert rows[0]["reason"] == "updated reason"
+
+    def test_is_quarantined_false_when_not_quarantined(self, initialized_db: Database):
+        """Test is_quarantined returns False for an untouched test."""
+        assert initialized_db.is_quarantined("some_test") is False
+
+    def test_unquarantine_test(self, initialized_db: Database):
+        """Test removing a test from quarantine."""
+        initialized_db.quarantine_test("flaky_test")
+
+        removed = initialized_db.unquarantine_test("flaky_test")
+
+        assert removed is True
+        assert initialized_db.is_quarantined("flaky_test") is False
+
+    def test_unquarantine_test_not_quarantined(self, initialized_db: Database):
+        """Test unquarantining a test that isn't quarantined returns False."""
+        assert initialized_db.unquarantine_test("never_quarantined") is False
+
+    def test_get_quarantined_tests_empty(self, initialized_db: Database):
+        """Test get_quarantined_tests returns an empty list when nothing is quarantined."""
+        assert initialized_db.get_quarantined_tests() == []
 
 
 class TestGetTestSummary:

@@ -23,9 +23,23 @@ class DatabaseError(Exception):
 # below - migrate() applies pending entries in order. The "latest" version
 # (see latest_schema_version()) is always derived from this list, so it
 # can't drift out of sync with the constant below.
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
-_MIGRATIONS: List[Tuple[int, str, Callable[[sqlite3.Cursor], None]]] = []
+
+def _create_quarantined_tests_table(cursor: sqlite3.Cursor) -> None:
+    """Create the quarantined_tests table (shared by initialize_schema and migration)."""
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS quarantined_tests (
+            test_name TEXT PRIMARY KEY,
+            reason TEXT,
+            quarantined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
+_MIGRATIONS: List[Tuple[int, str, Callable[[sqlite3.Cursor], None]]] = [
+    (2, "add quarantined_tests table for quarantine support", _create_quarantined_tests_table),
+]
 
 
 def latest_schema_version() -> int:
@@ -170,15 +184,18 @@ class Database:
             
             # Composite index for flakiness queries
             cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_results_test_timestamp 
+                CREATE INDEX IF NOT EXISTS idx_results_test_timestamp
                 ON test_results(test_name, timestamp DESC)
             """)
-            
+
+            # Quarantined tests - excluded from flaky-test detection
+            _create_quarantined_tests_table(cursor)
+
             # Store schema version
             cursor.execute("""
-                INSERT OR REPLACE INTO metadata (key, value) 
-                VALUES ('schema_version', '1.0')
-            """)
+                INSERT OR REPLACE INTO metadata (key, value)
+                VALUES ('schema_version', ?)
+            """, (str(CURRENT_SCHEMA_VERSION),))
             
             cursor.execute("""
                 INSERT OR REPLACE INTO metadata (key, value) 
@@ -468,6 +485,7 @@ class Database:
         min_runs: int = 5,
         lookback_days: int = 30,
         min_flip_rate: float = 0.1,
+        include_quarantined: bool = False,
     ) -> List[dict]:
         """
         Identify flaky tests based on status flip rate.
@@ -479,12 +497,21 @@ class Database:
             min_runs: Minimum number of runs required to evaluate
             lookback_days: Number of days to look back
             min_flip_rate: Minimum flip rate to be considered flaky (0.0-1.0)
+            include_quarantined: Include tests that have been quarantined
+                (excluded by default, since quarantining a flaky test is how
+                you tell Flaktor you already know about it)
 
         Returns:
             List of dicts with test info and flakiness metrics
         """
         if not self.conn:
             raise DatabaseError("Database not connected.")
+
+        quarantined = (
+            set()
+            if include_quarantined
+            else {q["test_name"] for q in self.get_quarantined_tests()}
+        )
 
         cursor = self.conn.cursor()
 
@@ -508,6 +535,8 @@ class Database:
         results = []
         for row in cursor.fetchall():
             test_name = row[0]
+            if test_name in quarantined:
+                continue
             total = row[1]
             passed = row[2]
             failed = row[3] + row[4]  # failures + errors
@@ -670,6 +699,76 @@ class Database:
             }
 
         return stats
+
+    def quarantine_test(self, test_name: str, reason: Optional[str] = None) -> None:
+        """
+        Mark a test as quarantined.
+
+        Quarantined tests are excluded from get_flaky_tests() results by
+        default, so a known flake stops re-triggering alerts while it's
+        being fixed. Quarantining an already-quarantined test updates its
+        reason.
+
+        Args:
+            test_name: Full test identifier
+            reason: Optional note on why the test is quarantined
+        """
+        if not self.conn:
+            raise DatabaseError("Database not connected.")
+
+        try:
+            self.conn.execute("""
+                INSERT INTO quarantined_tests (test_name, reason, quarantined_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(test_name) DO UPDATE SET
+                    reason = excluded.reason,
+                    quarantined_at = excluded.quarantined_at
+            """, (test_name, reason, datetime.now().isoformat()))
+            self.conn.commit()
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            raise DatabaseError(f"Failed to quarantine test '{test_name}'.\nError: {e}")
+
+    def unquarantine_test(self, test_name: str) -> bool:
+        """
+        Remove a test from quarantine.
+
+        Returns:
+            True if the test was quarantined and has now been removed,
+            False if it wasn't quarantined.
+        """
+        if not self.conn:
+            raise DatabaseError("Database not connected.")
+
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM quarantined_tests WHERE test_name = ?", (test_name,))
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def is_quarantined(self, test_name: str) -> bool:
+        """Check whether a test is currently quarantined."""
+        if not self.conn:
+            raise DatabaseError("Database not connected.")
+
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT 1 FROM quarantined_tests WHERE test_name = ?", (test_name,))
+        return cursor.fetchone() is not None
+
+    def get_quarantined_tests(self) -> List[dict]:
+        """Get all quarantined tests, most recently quarantined first."""
+        if not self.conn:
+            raise DatabaseError("Database not connected.")
+
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT test_name, reason, quarantined_at
+            FROM quarantined_tests
+            ORDER BY quarantined_at DESC
+        """)
+        return [
+            {"test_name": row[0], "reason": row[1], "quarantined_at": row[2]}
+            for row in cursor.fetchall()
+        ]
 
     def purge_old_data(
         self,

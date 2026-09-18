@@ -363,6 +363,16 @@ def list_tests(
         "--failed",
         help="Show only tests that failed in their last run"
     ),
+    quarantined: bool = typer.Option(
+        False,
+        "--quarantined",
+        help="Show only quarantined tests"
+    ),
+    include_quarantined: bool = typer.Option(
+        False,
+        "--include-quarantined",
+        help="Include quarantined tests in --flaky results (excluded by default)"
+    ),
     days: int = typer.Option(
         30,
         "--days",
@@ -383,7 +393,8 @@ def list_tests(
     """
     📋 List tests with statistics and flakiness info.
 
-    View all tests, filter by flaky tests, or see recent failures.
+    View all tests, filter by flaky tests, see recent failures, or see
+    what's currently quarantined.
 
     Examples:
         # List all tests
@@ -394,6 +405,9 @@ def list_tests(
 
         # Show recent failures
         $ flaktor list --failed
+
+        # Show quarantined tests
+        $ flaktor list --quarantined
 
         # Look back 7 days with minimum 3 runs
         $ flaktor list --flaky --days 7 --min-runs 3
@@ -412,12 +426,55 @@ def list_tests(
         )
         raise typer.Exit(code=1)
 
+    if quarantined:
+        try:
+            with Database(db_path) as db:
+                rows = db.get_quarantined_tests()
+        except DatabaseError as e:
+            console.print(
+                Panel.fit(
+                    f"[bold red]❌ Database error[/bold red]\n\n{str(e)}",
+                    border_style="red",
+                    title="Error"
+                )
+            )
+            raise typer.Exit(code=1)
+
+        if not rows:
+            console.print()
+            console.print(
+                Panel.fit(
+                    "[green]✅ No quarantined tests[/green]",
+                    border_style="green",
+                    title="Empty"
+                )
+            )
+            return
+
+        table = Table(title="Quarantined Tests")
+        table.add_column("Test Name", style="cyan", no_wrap=False)
+        table.add_column("Reason")
+        table.add_column("Quarantined At")
+
+        for row in rows[:limit]:
+            table.add_row(
+                _truncate_test_name(row["test_name"]),
+                row["reason"] or "[dim]-[/dim]",
+                str(row["quarantined_at"] or "-"),
+            )
+
+        console.print()
+        console.print(table)
+        console.print()
+        return
+
     try:
         with Database(db_path) as db:
             if flaky:
                 tests = db.get_flaky_tests(
                     min_runs=min_runs,
                     lookback_days=days,
+                    include_quarantined=include_quarantined,
                 )
                 title = f"Flaky Tests (last {days} days)"
             elif failed:
@@ -518,6 +575,193 @@ def list_tests(
 
         if len(tests) == limit:
             console.print(f"[dim]Showing {limit} of potentially more results. Use --limit to see more.[/dim]")
+
+    except DatabaseError as e:
+        console.print(
+            Panel.fit(
+                f"[bold red]❌ Database error[/bold red]\n\n{str(e)}",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def quarantine(
+    test_name: str = typer.Argument(
+        ...,
+        help="Test name (full or partial match)"
+    ),
+    reason: Optional[str] = typer.Option(
+        None,
+        "--reason",
+        "-r",
+        help="Why this test is quarantined"
+    ),
+    db_path: Optional[Path] = typer.Option(
+        None,
+        "--db",
+        "-d",
+        help="Database path (default: auto-detect)"
+    ),
+):
+    """
+    🔕 Quarantine a test to exclude it from flaky-test detection.
+
+    Quarantined tests are hidden from `flaktor list --flaky` (and the MCP
+    flaky-test tools) by default, so a known flake stops re-triggering
+    alerts while it's being fixed. Supports partial test name matching.
+
+    Examples:
+        # Quarantine a test
+        $ flaktor quarantine test_login.test_flaky_case
+
+        # Record why it's quarantined
+        $ flaktor quarantine test_flaky_case --reason "tracked in JIRA-123"
+    """
+    if db_path is None:
+        db_path = get_default_db_path()
+
+    if not ensure_database_exists(db_path):
+        console.print(
+            Panel.fit(
+                "[bold red]❌ Database not initialized[/bold red]\n\n"
+                f"💡 Run first: [yellow]flaktor init[/yellow]",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        with Database(db_path) as db:
+            all_tests = db.get_all_test_names()
+            exact_match = test_name if test_name in all_tests else None
+            partial_matches = [t for t in all_tests if test_name.lower() in t.lower()]
+
+            if exact_match:
+                selected_test = exact_match
+            elif len(partial_matches) == 1:
+                selected_test = partial_matches[0]
+            elif len(partial_matches) > 1:
+                console.print(
+                    Panel.fit(
+                        f"[yellow]Multiple tests match '{test_name}'[/yellow]\n\n"
+                        f"Found {len(partial_matches)} matching tests. "
+                        f"Please be more specific.",
+                        border_style="yellow",
+                        title="Multiple Matches"
+                    )
+                )
+                raise typer.Exit(code=1)
+            else:
+                console.print(
+                    Panel.fit(
+                        f"[bold red]❌ No tests found matching '{test_name}'[/bold red]\n\n"
+                        f"💡 Use [cyan]flaktor list[/cyan] to see all available tests",
+                        border_style="red",
+                        title="Not Found"
+                    )
+                )
+                raise typer.Exit(code=1)
+
+            db.quarantine_test(selected_test, reason=reason)
+
+        console.print(
+            Panel.fit(
+                f"[bold green]🔕 Quarantined[/bold green]\n\n"
+                f"Test: [cyan]{selected_test}[/cyan]\n"
+                + (f"Reason: {reason}\n" if reason else "")
+                + f"\nIt's now hidden from [cyan]flaktor list --flaky[/cyan]. "
+                f"Run [cyan]flaktor unquarantine {selected_test}[/cyan] to reverse this.",
+                border_style="green",
+                title="Quarantine"
+            )
+        )
+
+    except DatabaseError as e:
+        console.print(
+            Panel.fit(
+                f"[bold red]❌ Database error[/bold red]\n\n{str(e)}",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def unquarantine(
+    test_name: str = typer.Argument(
+        ...,
+        help="Test name (full or partial match)"
+    ),
+    db_path: Optional[Path] = typer.Option(
+        None,
+        "--db",
+        "-d",
+        help="Database path (default: auto-detect)"
+    ),
+):
+    """
+    🔔 Remove a test from quarantine.
+
+    Examples:
+        $ flaktor unquarantine test_login.test_flaky_case
+    """
+    if db_path is None:
+        db_path = get_default_db_path()
+
+    if not ensure_database_exists(db_path):
+        console.print(
+            Panel.fit(
+                "[bold red]❌ Database not initialized[/bold red]\n\n"
+                f"💡 Run first: [yellow]flaktor init[/yellow]",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        with Database(db_path) as db:
+            names = [q["test_name"] for q in db.get_quarantined_tests()]
+
+            exact_match = test_name if test_name in names else None
+            partial_matches = [t for t in names if test_name.lower() in t.lower()]
+
+            if exact_match:
+                selected_test = exact_match
+            elif len(partial_matches) == 1:
+                selected_test = partial_matches[0]
+            elif len(partial_matches) > 1:
+                console.print(
+                    Panel.fit(
+                        f"[yellow]Multiple quarantined tests match '{test_name}'[/yellow]\n\n"
+                        f"Found {len(partial_matches)} matching tests. "
+                        f"Please be more specific.",
+                        border_style="yellow",
+                        title="Multiple Matches"
+                    )
+                )
+                raise typer.Exit(code=1)
+            else:
+                console.print(
+                    Panel.fit(
+                        f"[bold red]❌ No quarantined test matches '{test_name}'[/bold red]\n\n"
+                        f"💡 Use [cyan]flaktor list --quarantined[/cyan] to see quarantined tests",
+                        border_style="red",
+                        title="Not Found"
+                    )
+                )
+                raise typer.Exit(code=1)
+
+            db.unquarantine_test(selected_test)
+
+        console.print(
+            f"[green]✅ Removed from quarantine:[/green] [cyan]{selected_test}[/cyan]"
+        )
 
     except DatabaseError as e:
         console.print(

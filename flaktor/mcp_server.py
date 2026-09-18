@@ -31,6 +31,7 @@ def build_server(db_path: Path) -> MCPServer:
         min_runs: int = 5,
         lookback_days: int = 30,
         min_flip_rate: float = 0.1,
+        include_quarantined: bool = False,
     ) -> list[dict]:
         """
         List tests currently flagged as flaky.
@@ -39,12 +40,15 @@ def build_server(db_path: Path) -> MCPServer:
             min_runs: Minimum number of runs a test needs before it's evaluated.
             lookback_days: How many days of history to consider.
             min_flip_rate: Minimum flip rate (0.0-1.0) to count as flaky.
+            include_quarantined: Include tests that have been quarantined
+                (excluded by default).
         """
         with Database(db_path) as db:
             return db.get_flaky_tests(
                 min_runs=min_runs,
                 lookback_days=lookback_days,
                 min_flip_rate=min_flip_rate,
+                include_quarantined=include_quarantined,
             )
 
     @server.tool()
@@ -52,14 +56,21 @@ def build_server(db_path: Path) -> MCPServer:
         """
         Check whether a specific test is a known flake, with its recent history.
 
+        A quarantined test is one a human has already flagged as a known
+        flake - treat a failure there as expected, not a signal to investigate.
+
         Args:
             test_name: Full test identifier (e.g. "test_api.TestAuth.test_token_refresh").
             lookback_days: How many days of history to consider.
         """
         with Database(db_path) as db:
-            flaky = db.get_flaky_tests(min_runs=1, lookback_days=lookback_days, min_flip_rate=0.0)
+            flaky = db.get_flaky_tests(
+                min_runs=1, lookback_days=lookback_days, min_flip_rate=0.0,
+                include_quarantined=True,
+            )
             match = next((t for t in flaky if t["test_name"] == test_name), None)
             history = [dict(row) for row in db.get_test_history(test_name, limit=10)]
+            quarantined = db.is_quarantined(test_name)
 
         if not history:
             return {
@@ -73,8 +84,15 @@ def build_server(db_path: Path) -> MCPServer:
             "known": True,
             "is_flaky": match is not None,
             "flip_rate": match["flip_rate"] if match else 0.0,
+            "is_quarantined": quarantined,
             "recent_history": history,
         }
+
+    @server.tool()
+    def list_quarantined_tests() -> list[dict]:
+        """List tests currently quarantined (excluded from flaky-test alerts)."""
+        with Database(db_path) as db:
+            return db.get_quarantined_tests()
 
     @server.tool()
     def get_test_history(test_name: str, limit: int = 30) -> list[dict]:
