@@ -13,6 +13,7 @@ from typing import Optional, List
 from datetime import datetime
 import csv
 import glob as glob_module
+import html
 import json
 import os
 
@@ -783,6 +784,182 @@ def _truncate_test_name(name: str, max_length: int = 60) -> str:
     return "..." + name[-(max_length - 3):]
 
 
+def _health_status(health_score: float) -> tuple:
+    """Map a health score to a (label, CSS/status class) pair."""
+    if health_score >= 90:
+        return ("EXCELLENT - Your test suite is healthy!", "excellent")
+    elif health_score >= 70:
+        return ("GOOD - Some attention needed", "good")
+    elif health_score >= 50:
+        return ("FAIR - Consider addressing flaky tests", "fair")
+    else:
+        return ("NEEDS ATTENTION - Many flaky/failing tests", "attention")
+
+
+def _build_html_report(
+    *,
+    days: int,
+    stats: dict,
+    flaky_tests: List[dict],
+    total_tests: int,
+    flaky_count: int,
+    failed_count: int,
+    passed_count: int,
+    health_score: float,
+    status_label: str,
+    status_class: str,
+    max_flaky_rows: int = 25,
+) -> str:
+    """Render a self-contained HTML flakiness report (no external assets)."""
+    generated_at = html.escape(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    flaky_rows = ""
+    for test in flaky_tests[:max_flaky_rows]:
+        flaky_rows += f"""
+            <tr>
+                <td class="test-name">{html.escape(test['test_name'])}</td>
+                <td class="num flip-rate">{test['flip_rate']*100:.0f}%</td>
+                <td class="num">{test['pass_rate']*100:.0f}%</td>
+                <td class="num">{test['total_runs']}</td>
+                <td class="num"><span class="pass">{test['passed']}</span>/<span class="fail">{test['failed']}</span></td>
+                <td class="num">{test['avg_duration']:.2f}s</td>
+            </tr>"""
+
+    if not flaky_tests:
+        flaky_section = '<p class="empty">✅ No flaky tests detected in this period.</p>'
+    else:
+        remainder_note = ""
+        if len(flaky_tests) > max_flaky_rows:
+            remainder_note = (
+                f'<p class="note">...and {len(flaky_tests) - max_flaky_rows} more flaky test(s) '
+                f'not shown.</p>'
+            )
+        flaky_section = f"""
+        <table>
+            <thead>
+                <tr>
+                    <th>Test Name</th>
+                    <th class="num">Flip Rate</th>
+                    <th class="num">Pass Rate</th>
+                    <th class="num">Runs</th>
+                    <th class="num">P/F</th>
+                    <th class="num">Avg Time</th>
+                </tr>
+            </thead>
+            <tbody>{flaky_rows}
+            </tbody>
+        </table>
+        {remainder_note}"""
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Flaktor Test Health Report</title>
+<style>
+    :root {{
+        color-scheme: light dark;
+        --bg: #f7f7f9;
+        --card-bg: #ffffff;
+        --text: #1a1a1a;
+        --text-dim: #6b7280;
+        --border: #e5e7eb;
+        --accent: #2563eb;
+        --green: #16a34a;
+        --yellow: #ca8a04;
+        --red: #dc2626;
+    }}
+    @media (prefers-color-scheme: dark) {{
+        :root {{
+            --bg: #0f1115;
+            --card-bg: #1a1d24;
+            --text: #e5e7eb;
+            --text-dim: #9ca3af;
+            --border: #2d313b;
+        }}
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+        margin: 0;
+        padding: 24px 16px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }}
+    .container {{ max-width: 900px; margin: 0 auto; }}
+    h1 {{ font-size: 1.5rem; margin-bottom: 4px; }}
+    .meta {{ color: var(--text-dim); font-size: 0.9rem; margin-bottom: 24px; }}
+    .stat-grid {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 12px;
+        margin-bottom: 24px;
+    }}
+    .stat-card {{
+        background: var(--card-bg);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 14px 16px;
+    }}
+    .stat-card .value {{ font-size: 1.6rem; font-weight: 700; }}
+    .stat-card .label {{ color: var(--text-dim); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; }}
+    .health-banner {{
+        border-radius: 10px;
+        padding: 16px 20px;
+        margin-bottom: 24px;
+        font-weight: 600;
+        border: 1px solid var(--border);
+    }}
+    .health-banner .score {{ font-size: 1.8rem; font-weight: 800; margin-right: 8px; }}
+    .health-excellent {{ background: color-mix(in srgb, var(--green) 12%, var(--card-bg)); color: var(--green); }}
+    .health-good {{ background: color-mix(in srgb, var(--accent) 10%, var(--card-bg)); color: var(--accent); }}
+    .health-fair {{ background: color-mix(in srgb, var(--yellow) 12%, var(--card-bg)); color: var(--yellow); }}
+    .health-attention {{ background: color-mix(in srgb, var(--red) 12%, var(--card-bg)); color: var(--red); }}
+    section {{ margin-bottom: 24px; }}
+    h2 {{ font-size: 1.1rem; border-bottom: 1px solid var(--border); padding-bottom: 8px; }}
+    table {{ width: 100%; border-collapse: collapse; background: var(--card-bg); border-radius: 10px; overflow: hidden; }}
+    th, td {{ padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); font-size: 0.9rem; }}
+    th {{ color: var(--text-dim); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; }}
+    td.num, th.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+    td.test-name {{ word-break: break-word; }}
+    .flip-rate {{ color: var(--red); font-weight: 600; }}
+    .pass {{ color: var(--green); }}
+    .fail {{ color: var(--red); }}
+    .empty {{ color: var(--green); font-weight: 600; }}
+    .note {{ color: var(--text-dim); font-size: 0.85rem; }}
+    footer {{ color: var(--text-dim); font-size: 0.8rem; text-align: center; margin-top: 32px; }}
+</style>
+</head>
+<body>
+<div class="container">
+    <h1>🔍 Flaktor Test Health Report</h1>
+    <div class="meta">Analysis period: last {days} days &middot; Generated {generated_at}</div>
+
+    <div class="health-banner health-{status_class}">
+        <span class="score">{health_score:.0f}%</span>{html.escape(status_label)}
+    </div>
+
+    <div class="stat-grid">
+        <div class="stat-card"><div class="value">{total_tests}</div><div class="label">Unique Tests</div></div>
+        <div class="stat-card"><div class="value">{stats['total_runs']}</div><div class="label">Test Runs</div></div>
+        <div class="stat-card"><div class="value">{stats['total_results']}</div><div class="label">Test Results</div></div>
+        <div class="stat-card"><div class="value">{flaky_count}</div><div class="label">Flaky Tests</div></div>
+        <div class="stat-card"><div class="value">{passed_count}</div><div class="label">Currently Passing</div></div>
+        <div class="stat-card"><div class="value">{failed_count}</div><div class="label">Currently Failing</div></div>
+    </div>
+
+    <section>
+        <h2>Flaky Tests{' (sorted by flip rate)' if flaky_tests else ''}</h2>
+        {flaky_section}
+    </section>
+
+    <footer>Generated by Flaktor &middot; flaky-test intelligence for CI/CD</footer>
+</div>
+</body>
+</html>
+"""
+
+
 def _format_status(status: str) -> str:
     """Format status with color."""
     if status == "passed":
@@ -1209,12 +1386,20 @@ def report(
         "-o",
         help="Output file path (prints to console if not specified)"
     ),
+    format: Optional[str] = typer.Option(
+        None,
+        "--format",
+        "-f",
+        help="Report format: text or html (default: inferred from --output extension)"
+    ),
 ):
     """
     📊 Generate a flakiness report.
 
     Create a summary report of test health including flaky tests,
-    failure rates, and overall statistics.
+    failure rates, and overall statistics. Format is inferred from the
+    --output file extension unless --format is set; HTML requires
+    --output since it isn't meant for terminal display.
 
     Examples:
         # Print report to console
@@ -1225,7 +1410,39 @@ def report(
 
         # Save report to file
         $ flaktor report --output report.txt
+
+        # Generate a shareable HTML report
+        $ flaktor report --output report.html
     """
+    if format:
+        report_format = format.lower()
+    elif output and output.suffix.lower() in (".html", ".htm"):
+        report_format = "html"
+    else:
+        report_format = "text"
+
+    if report_format not in ("text", "html"):
+        console.print(
+            Panel.fit(
+                f"[bold red]❌ Unsupported format '{report_format}'[/bold red]\n\n"
+                f"💡 Use [cyan]--format text[/cyan] or [cyan]--format html[/cyan]",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+    if report_format == "html" and not output:
+        console.print(
+            Panel.fit(
+                "[bold red]❌ HTML reports require --output[/bold red]\n\n"
+                f"💡 Try: [cyan]flaktor report --output report.html[/cyan]",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
     if db_path is None:
         db_path = get_default_db_path()
 
@@ -1296,25 +1513,35 @@ def report(
         else:
             health_score = 100
 
+        status_label, status_class = _health_status(health_score)
+
         report_lines.append("-" * 60)
         report_lines.append("HEALTH SCORE")
         report_lines.append("-" * 60)
         report_lines.append(f"Overall Health: {health_score:.0f}%")
-        if health_score >= 90:
-            report_lines.append("Status: EXCELLENT - Your test suite is healthy!")
-        elif health_score >= 70:
-            report_lines.append("Status: GOOD - Some attention needed")
-        elif health_score >= 50:
-            report_lines.append("Status: FAIR - Consider addressing flaky tests")
-        else:
-            report_lines.append("Status: NEEDS ATTENTION - Many flaky/failing tests")
+        report_lines.append(f"Status: {status_label}")
         report_lines.append("")
         report_lines.append("=" * 60)
 
         report_content = "\n".join(report_lines)
 
         # Output report
-        if output:
+        if report_format == "html":
+            html_content = _build_html_report(
+                days=days,
+                stats=stats,
+                flaky_tests=flaky_tests,
+                total_tests=total_tests,
+                flaky_count=flaky_count,
+                failed_count=failed_count,
+                passed_count=passed_count,
+                health_score=health_score,
+                status_label=status_label,
+                status_class=status_class,
+            )
+            output.write_text(html_content)
+            console.print(f"[green]✅ HTML report saved to {output}[/green]")
+        elif output:
             output.write_text(report_content)
             console.print(f"[green]✅ Report saved to {output}[/green]")
         else:

@@ -50,6 +50,7 @@ flaktor report
 | `flaktor unquarantine <test>` | Remove a test from quarantine |
 | `flaktor history <test>` | View detailed history for a test |
 | `flaktor report` | Generate a test health report |
+| `flaktor report --output report.html` | Generate a shareable HTML report |
 | `flaktor export --output <file>` | Export test data to JSON or CSV |
 | `flaktor compare <branch-a> <branch-b>` | Compare flakiness between two branches |
 | `flaktor trend` | Show flakiness trends over time (improving/worsening) |

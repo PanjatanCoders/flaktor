@@ -407,6 +407,75 @@ class TestReportCommand:
         assert result.exit_code == 0
         assert "Last 7 days" in result.stdout
 
+    def test_report_html_requires_output(self, initialized_db: Path):
+        """Test --format html without --output is rejected."""
+        result = runner.invoke(
+            app, ["report", "--db", str(initialized_db), "--format", "html"]
+        )
+
+        assert result.exit_code == 1
+        assert "require --output" in result.stdout
+
+    def test_report_unsupported_format(self, initialized_db: Path):
+        """Test an unrecognized --format value is rejected."""
+        result = runner.invoke(
+            app, ["report", "--db", str(initialized_db), "--format", "xml"]
+        )
+
+        assert result.exit_code == 1
+        assert "Unsupported format" in result.stdout
+
+    def test_report_html_inferred_from_extension(self, initialized_db: Path, tmp_path: Path):
+        """Test --output report.html generates an HTML file without needing --format."""
+        output_file = tmp_path / "report.html"
+
+        result = runner.invoke(
+            app, ["report", "--db", str(initialized_db), "--output", str(output_file)]
+        )
+
+        assert result.exit_code == 0
+        assert "HTML report saved" in result.stdout
+
+        content = output_file.read_text()
+        assert content.startswith("<!DOCTYPE html>")
+        assert "Flaktor Test Health Report" in content
+
+    def test_report_html_escapes_test_names(self, initialized_db: Path, tmp_path: Path):
+        """Test test names with HTML special characters are escaped, not injected raw."""
+        for i in range(3):
+            failed = i % 2 == 1
+            failure_block = '<failure message="boom">boom</failure>' if failed else ""
+            xml_file = tmp_path / f"r{i}.xml"
+            xml_file.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
+            <testsuite name="s" tests="1" failures="{1 if failed else 0}">
+                <testcase name="test_flaky" classname="Test&lt;Weird&gt;&amp;Name" time="0.1">{failure_block}</testcase>
+            </testsuite>
+            """)
+            runner.invoke(app, ["upload", str(xml_file), "--db", str(initialized_db)])
+
+        output_file = tmp_path / "report.html"
+        result = runner.invoke(
+            app, ["report", "--db", str(initialized_db), "--output", str(output_file)]
+        )
+
+        assert result.exit_code == 0
+        content = output_file.read_text()
+        assert "Test&lt;Weird&gt;&amp;Name.test_flaky" in content
+        assert "<Weird>" not in content
+        assert "<script" not in content
+
+    def test_report_html_no_flaky_tests(self, initialized_db: Path, tmp_path: Path):
+        """Test the HTML report shows a clean-bill-of-health message when nothing is flaky."""
+        output_file = tmp_path / "report.html"
+
+        result = runner.invoke(
+            app, ["report", "--db", str(initialized_db), "--output", str(output_file)]
+        )
+
+        assert result.exit_code == 0
+        content = output_file.read_text()
+        assert "No flaky tests detected" in content
+
 
 class TestCompareCommand:
     """Tests for the compare command."""
