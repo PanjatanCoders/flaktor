@@ -1088,6 +1088,156 @@ def report(
 
 
 @app.command()
+def compare(
+    branch_a: str = typer.Argument(..., help="First branch to compare"),
+    branch_b: str = typer.Argument(..., help="Second branch to compare"),
+    db_path: Optional[Path] = typer.Option(
+        None,
+        "--db",
+        "-d",
+        help="Database path (default: auto-detect)"
+    ),
+    days: int = typer.Option(
+        30,
+        "--days",
+        help="Number of days to look back"
+    ),
+    min_runs: int = typer.Option(
+        1,
+        "--min-runs",
+        help="Minimum runs (on either branch) for a test to be shown"
+    ),
+    only_diff: bool = typer.Option(
+        False,
+        "--only-diff",
+        help="Show only tests whose pass rate differs between branches"
+    ),
+    limit: int = typer.Option(
+        50,
+        "--limit",
+        "-n",
+        help="Maximum number of tests to display"
+    ),
+):
+    """
+    ⚖️  Compare test flakiness between two branches.
+
+    Shows pass rate, flip rate, and run counts side by side for tests that
+    ran on either branch, sorted to surface the biggest regressions first.
+
+    Examples:
+        # Compare main against a feature branch
+        $ flaktor compare main feature/new-auth
+
+        # Only show tests that actually behave differently
+        $ flaktor compare main develop --only-diff
+
+        # Widen the lookback window
+        $ flaktor compare main develop --days 90
+    """
+    if db_path is None:
+        db_path = get_default_db_path()
+
+    if not ensure_database_exists(db_path):
+        console.print(
+            Panel.fit(
+                "[bold red]❌ Database not initialized[/bold red]\n\n"
+                f"💡 Run first: [yellow]flaktor init[/yellow]",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        with Database(db_path) as db:
+            stats_a = db.get_branch_test_stats(branch_a, lookback_days=days)
+            stats_b = db.get_branch_test_stats(branch_b, lookback_days=days)
+
+        rows = []
+        for test_name in sorted(set(stats_a) | set(stats_b)):
+            a = stats_a.get(test_name)
+            b = stats_b.get(test_name)
+
+            if max(a["total_runs"] if a else 0, b["total_runs"] if b else 0) < min_runs:
+                continue
+
+            delta = (b["pass_rate"] - a["pass_rate"]) if (a and b) else None
+
+            if only_diff and delta is not None and abs(delta) < 1e-9:
+                continue
+
+            rows.append((test_name, a, b, delta))
+
+        if not rows:
+            console.print()
+            console.print(
+                Panel.fit(
+                    f"[green]No differences found[/green]\n\n"
+                    f"Compared [cyan]{branch_a}[/cyan] and [cyan]{branch_b}[/cyan] "
+                    f"over the last {days} days with at least {min_runs} run(s).",
+                    border_style="green",
+                    title="No Regressions"
+                )
+            )
+            return
+
+        # Worst regressions (branch_b pass rate lower than branch_a) first,
+        # then branch-exclusive tests at the bottom.
+        rows.sort(key=lambda r: (r[3] is None, r[3] if r[3] is not None else 0))
+        rows = rows[:limit]
+
+        table = Table(title=f"{branch_a} vs {branch_b} (last {days} days)")
+        table.add_column("Test Name", style="cyan", no_wrap=False)
+        table.add_column(f"{branch_a}\nPass%", justify="right")
+        table.add_column(f"{branch_a}\nRuns", justify="right")
+        table.add_column(f"{branch_b}\nPass%", justify="right")
+        table.add_column(f"{branch_b}\nRuns", justify="right")
+        table.add_column("Δ", justify="right")
+
+        for test_name, a, b, delta in rows:
+            a_pass = f"{a['pass_rate']*100:.0f}%" if a else "[dim]-[/dim]"
+            a_runs = str(a["total_runs"]) if a else "[dim]-[/dim]"
+            b_pass = f"{b['pass_rate']*100:.0f}%" if b else "[dim]-[/dim]"
+            b_runs = str(b["total_runs"]) if b else "[dim]-[/dim]"
+
+            if delta is None:
+                delta_display = "[dim]only one branch[/dim]"
+            elif delta < 0:
+                delta_display = f"[red]{delta*100:.0f}%[/red]"
+            elif delta > 0:
+                delta_display = f"[green]+{delta*100:.0f}%[/green]"
+            else:
+                delta_display = "0%"
+
+            table.add_row(
+                _truncate_test_name(test_name),
+                a_pass,
+                a_runs,
+                b_pass,
+                b_runs,
+                delta_display,
+            )
+
+        console.print()
+        console.print(table)
+        console.print()
+
+        if len(rows) == limit:
+            console.print(f"[dim]Showing {limit} results. Use --limit to see more.[/dim]")
+
+    except DatabaseError as e:
+        console.print(
+            Panel.fit(
+                f"[bold red]❌ Database error[/bold red]\n\n{str(e)}",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+
+@app.command()
 def export(
     db_path: Optional[Path] = typer.Option(
         None,

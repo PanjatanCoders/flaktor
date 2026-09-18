@@ -618,6 +618,59 @@ class Database:
 
         return results
 
+    def get_branch_test_stats(
+        self,
+        branch: str,
+        lookback_days: int = 30,
+    ) -> dict:
+        """
+        Get per-test statistics scoped to a single branch.
+
+        Args:
+            branch: Branch name to filter test runs by
+            lookback_days: Number of days to look back
+
+        Returns:
+            Dict mapping test_name -> stats (total_runs, passed, failed,
+            pass_rate, flip_rate, avg_duration)
+        """
+        if not self.conn:
+            raise DatabaseError("Database not connected.")
+
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT
+                r.test_name,
+                COUNT(*) as total_runs,
+                SUM(CASE WHEN r.status = 'passed' THEN 1 ELSE 0 END) as passed,
+                SUM(CASE WHEN r.status = 'failed' THEN 1 ELSE 0 END) as failed,
+                SUM(CASE WHEN r.status = 'error' THEN 1 ELSE 0 END) as errors,
+                AVG(r.duration) as avg_duration
+            FROM test_results r
+            JOIN test_runs t ON r.run_id = t.run_id
+            WHERE t.branch = ? AND r.timestamp >= datetime('now', ?)
+            GROUP BY r.test_name
+        """, (branch, f'-{lookback_days} days'))
+
+        stats = {}
+        for row in cursor.fetchall():
+            test_name, total, passed, failed, errors, avg_duration = row
+            failed_total = failed + errors
+            pass_rate = passed / total if total else 0.0
+            fail_rate = failed_total / total if total else 0.0
+            flip_rate = 2 * min(pass_rate, fail_rate) if total > 1 else 0.0
+
+            stats[test_name] = {
+                "total_runs": total,
+                "passed": passed,
+                "failed": failed_total,
+                "pass_rate": round(pass_rate, 3),
+                "flip_rate": round(flip_rate, 3),
+                "avg_duration": round(avg_duration, 3) if avg_duration else 0.0,
+            }
+
+        return stats
+
     def purge_old_data(
         self,
         days_to_keep: int = 90,

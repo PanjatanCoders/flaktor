@@ -270,6 +270,112 @@ class TestReportCommand:
         assert "Last 7 days" in result.stdout
 
 
+class TestCompareCommand:
+    """Tests for the compare command."""
+
+    def test_compare_database_not_initialized(self, tmp_path: Path):
+        """Test compare with uninitialized database."""
+        db_path = tmp_path / "uninit.db"
+
+        result = runner.invoke(
+            app, ["compare", "main", "feature", "--db", str(db_path)]
+        )
+
+        assert result.exit_code == 1
+        assert "Database not initialized" in result.stdout
+
+    def test_compare_no_data(self, initialized_db: Path):
+        """Test compare when neither branch has data."""
+        result = runner.invoke(
+            app, ["compare", "main", "feature", "--db", str(initialized_db)]
+        )
+
+        assert result.exit_code == 0
+        assert "No differences found" in result.stdout
+
+    def test_compare_identical_branches(self, initialized_db: Path, sample_xml: Path):
+        """Test comparing a branch against itself shows the same stats."""
+        runner.invoke(
+            app,
+            ["upload", str(sample_xml), "--db", str(initialized_db), "--branch", "main"],
+        )
+
+        result = runner.invoke(
+            app, ["compare", "main", "main", "--db", str(initialized_db)]
+        )
+
+        assert result.exit_code == 0
+        assert "main vs main" in result.stdout
+
+    def test_compare_shows_regression(self, initialized_db: Path, tmp_path: Path):
+        """Test compare surfaces a test that regressed on the second branch."""
+        timestamp = datetime.now().isoformat(timespec="seconds")
+
+        main_xml = tmp_path / "main.xml"
+        main_xml.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
+        <testsuite name="s" tests="1" failures="0" timestamp="{timestamp}">
+            <testcase name="test_login" classname="TestAuth" time="0.1"/>
+        </testsuite>
+        """)
+
+        feature_xml = tmp_path / "feature.xml"
+        feature_xml.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
+        <testsuite name="s" tests="1" failures="1" timestamp="{timestamp}">
+            <testcase name="test_login" classname="TestAuth" time="0.1">
+                <failure message="boom">boom</failure>
+            </testcase>
+        </testsuite>
+        """)
+
+        runner.invoke(
+            app,
+            ["upload", str(main_xml), "--db", str(initialized_db), "--branch", "main"],
+        )
+        runner.invoke(
+            app,
+            ["upload", str(feature_xml), "--db", str(initialized_db), "--branch", "feature"],
+        )
+
+        result = runner.invoke(
+            app, ["compare", "main", "feature", "--db", str(initialized_db)]
+        )
+
+        assert result.exit_code == 0
+        assert "TestAuth" in result.stdout
+        assert "100%" in result.stdout
+        assert "0%" in result.stdout
+
+    def test_compare_only_diff_filters_identical(self, initialized_db: Path, sample_xml: Path):
+        """Test --only-diff hides tests with no change between branches."""
+        runner.invoke(
+            app,
+            ["upload", str(sample_xml), "--db", str(initialized_db), "--branch", "main"],
+        )
+
+        result = runner.invoke(
+            app,
+            ["compare", "main", "main", "--db", str(initialized_db), "--only-diff"],
+        )
+
+        assert result.exit_code == 0
+        assert "No differences found" in result.stdout
+
+    def test_compare_min_runs_filter(self, initialized_db: Path, sample_xml: Path):
+        """Test --min-runs excludes tests below the run threshold."""
+        runner.invoke(
+            app,
+            ["upload", str(sample_xml), "--db", str(initialized_db), "--branch", "main"],
+        )
+
+        result = runner.invoke(
+            app,
+            ["compare", "main", "feature", "--db", str(initialized_db), "--min-runs", "5"],
+        )
+
+        assert result.exit_code == 0
+        assert "No differences found" in result.stdout
+
+
 class TestExportCommand:
     """Tests for the export command."""
 

@@ -49,6 +49,7 @@ flaktor report
 | `flaktor history <test>` | View detailed history for a test |
 | `flaktor report` | Generate a test health report |
 | `flaktor export --output <file>` | Export test data to JSON or CSV |
+| `flaktor compare <branch-a> <branch-b>` | Compare flakiness between two branches |
 | `flaktor clean` | Remove old data from the database |
 | `flaktor info` | Show database information |
 | `flaktor migrate` | Apply pending database schema migrations |
