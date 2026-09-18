@@ -48,6 +48,10 @@ flaktor report
 | `flaktor list --flaky` | Show only flaky tests |
 | `flaktor quarantine <test>` | Quarantine a test, excluding it from flaky detection |
 | `flaktor unquarantine <test>` | Remove a test from quarantine |
+| `flaktor tag <test> <tags...>` | Tag a test for grouping and filtering |
+| `flaktor untag <test> <tag>` | Remove a tag from a test |
+| `flaktor tags` | List all tags and how many tests carry each |
+| `flaktor list --tag <tag>` | Show only tests with a given tag |
 | `flaktor history <test>` | View detailed history for a test |
 | `flaktor report` | Generate a test health report |
 | `flaktor report --output report.html` | Generate a shareable HTML report |
@@ -114,7 +118,7 @@ Add it to your MCP client config, e.g. for Claude Code:
 claude mcp add flaktor -- flaktor mcp
 ```
 
-Available tools: `list_flaky_tests`, `check_test_flakiness`, `get_test_history`, `get_test_summary`, `get_database_stats`.
+Available tools: `list_flaky_tests`, `check_test_flakiness`, `list_quarantined_tests`, `list_tags`, `list_tests_by_tag`, `list_trending_tests`, `get_test_history`, `get_test_summary`, `get_database_stats`.
 
 ## Understanding Flakiness
 

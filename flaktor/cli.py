@@ -376,6 +376,11 @@ def list_tests(
         "--include-quarantined",
         help="Include quarantined tests in --flaky results (excluded by default)"
     ),
+    tag: Optional[str] = typer.Option(
+        None,
+        "--tag",
+        help="Show only tests with this tag"
+    ),
     days: int = typer.Option(
         30,
         "--days",
@@ -411,6 +416,9 @@ def list_tests(
 
         # Show quarantined tests
         $ flaktor list --quarantined
+
+        # Show only tests tagged "integration"
+        $ flaktor list --tag integration
 
         # Look back 7 days with minimum 3 runs
         $ flaktor list --flaky --days 7 --min-runs 3
@@ -490,9 +498,25 @@ def list_tests(
                 tests = db.get_test_summary(lookback_days=days)
                 title = f"All Tests (last {days} days)"
 
+            if tag:
+                tagged_names = set(db.get_tests_by_tag(tag))
+                tests = [t for t in tests if t["test_name"] in tagged_names]
+                title += f" (tag: {tag})"
+
+            tags_map = db.get_test_tags_map()
+
         if not tests:
             console.print()
-            if flaky:
+            if tag:
+                console.print(
+                    Panel.fit(
+                        f"[yellow]No tests found with tag '{tag}'[/yellow]\n\n"
+                        f"💡 Use [cyan]flaktor tags[/cyan] to see all tags in use",
+                        border_style="yellow",
+                        title="Empty"
+                    )
+                )
+            elif flaky:
                 console.print(
                     Panel.fit(
                         "[green]✅ No flaky tests detected![/green]\n\n"
@@ -546,6 +570,7 @@ def list_tests(
             table.add_column("Runs", justify="right")
             table.add_column("Pass Rate", justify="right")
             table.add_column("Avg Time", justify="right")
+            table.add_column("Tags")
 
             for test in tests:
                 status = test.get("last_status", "unknown")
@@ -563,6 +588,8 @@ def list_tests(
                 total = test["total_runs"]
                 passed = test["passed"]
                 pass_rate = f"{(passed/total)*100:.0f}%" if total > 0 else "-"
+                test_tags = tags_map.get(test["test_name"], [])
+                tags_display = ", ".join(test_tags) if test_tags else "[dim]-[/dim]"
 
                 table.add_row(
                     _truncate_test_name(test["test_name"]),
@@ -570,6 +597,7 @@ def list_tests(
                     str(total),
                     pass_rate,
                     f"{test['avg_duration']:.2f}s",
+                    tags_display,
                 )
 
         console.print()
@@ -765,6 +793,270 @@ def unquarantine(
         console.print(
             f"[green]✅ Removed from quarantine:[/green] [cyan]{selected_test}[/cyan]"
         )
+
+    except DatabaseError as e:
+        console.print(
+            Panel.fit(
+                f"[bold red]❌ Database error[/bold red]\n\n{str(e)}",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def tag(
+    test_name: str = typer.Argument(
+        ...,
+        help="Test name (full or partial match)"
+    ),
+    tags: List[str] = typer.Argument(
+        ...,
+        help="One or more tags to add"
+    ),
+    db_path: Optional[Path] = typer.Option(
+        None,
+        "--db",
+        "-d",
+        help="Database path (default: auto-detect)"
+    ),
+):
+    """
+    🏷️  Tag a test for grouping and filtering.
+
+    Tags are freeform labels (e.g. "integration", "slow", "team-payments")
+    stored lowercase, used to filter `flaktor list --tag <tag>` and see
+    flakiness by area of the codebase. Supports partial test name matching.
+
+    Examples:
+        # Tag a test
+        $ flaktor tag test_login.test_flaky_case integration
+
+        # Add multiple tags at once
+        $ flaktor tag test_flaky_case integration slow
+    """
+    if db_path is None:
+        db_path = get_default_db_path()
+
+    if not ensure_database_exists(db_path):
+        console.print(
+            Panel.fit(
+                "[bold red]❌ Database not initialized[/bold red]\n\n"
+                f"💡 Run first: [yellow]flaktor init[/yellow]",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        with Database(db_path) as db:
+            all_tests = db.get_all_test_names()
+            exact_match = test_name if test_name in all_tests else None
+            partial_matches = [t for t in all_tests if test_name.lower() in t.lower()]
+
+            if exact_match:
+                selected_test = exact_match
+            elif len(partial_matches) == 1:
+                selected_test = partial_matches[0]
+            elif len(partial_matches) > 1:
+                console.print(
+                    Panel.fit(
+                        f"[yellow]Multiple tests match '{test_name}'[/yellow]\n\n"
+                        f"Found {len(partial_matches)} matching tests. "
+                        f"Please be more specific.",
+                        border_style="yellow",
+                        title="Multiple Matches"
+                    )
+                )
+                raise typer.Exit(code=1)
+            else:
+                console.print(
+                    Panel.fit(
+                        f"[bold red]❌ No tests found matching '{test_name}'[/bold red]\n\n"
+                        f"💡 Use [cyan]flaktor list[/cyan] to see all available tests",
+                        border_style="red",
+                        title="Not Found"
+                    )
+                )
+                raise typer.Exit(code=1)
+
+            db.add_tags(selected_test, tags)
+            all_tags = db.get_tags_for_test(selected_test)
+
+        console.print(
+            Panel.fit(
+                f"[bold green]🏷️  Tagged[/bold green]\n\n"
+                f"Test: [cyan]{selected_test}[/cyan]\n"
+                f"Tags: {', '.join(all_tags)}",
+                border_style="green",
+                title="Tag"
+            )
+        )
+
+    except DatabaseError as e:
+        console.print(
+            Panel.fit(
+                f"[bold red]❌ Database error[/bold red]\n\n{str(e)}",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def untag(
+    test_name: str = typer.Argument(
+        ...,
+        help="Test name (full or partial match)"
+    ),
+    tag: str = typer.Argument(
+        ...,
+        help="Tag to remove"
+    ),
+    db_path: Optional[Path] = typer.Option(
+        None,
+        "--db",
+        "-d",
+        help="Database path (default: auto-detect)"
+    ),
+):
+    """
+    Remove a tag from a test.
+
+    Examples:
+        $ flaktor untag test_login.test_flaky_case integration
+    """
+    if db_path is None:
+        db_path = get_default_db_path()
+
+    if not ensure_database_exists(db_path):
+        console.print(
+            Panel.fit(
+                "[bold red]❌ Database not initialized[/bold red]\n\n"
+                f"💡 Run first: [yellow]flaktor init[/yellow]",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        with Database(db_path) as db:
+            all_tests = db.get_all_test_names()
+            exact_match = test_name if test_name in all_tests else None
+            partial_matches = [t for t in all_tests if test_name.lower() in t.lower()]
+
+            if exact_match:
+                selected_test = exact_match
+            elif len(partial_matches) == 1:
+                selected_test = partial_matches[0]
+            elif len(partial_matches) > 1:
+                console.print(
+                    Panel.fit(
+                        f"[yellow]Multiple tests match '{test_name}'[/yellow]\n\n"
+                        f"Found {len(partial_matches)} matching tests. "
+                        f"Please be more specific.",
+                        border_style="yellow",
+                        title="Multiple Matches"
+                    )
+                )
+                raise typer.Exit(code=1)
+            else:
+                console.print(
+                    Panel.fit(
+                        f"[bold red]❌ No tests found matching '{test_name}'[/bold red]\n\n"
+                        f"💡 Use [cyan]flaktor list[/cyan] to see all available tests",
+                        border_style="red",
+                        title="Not Found"
+                    )
+                )
+                raise typer.Exit(code=1)
+
+            removed = db.remove_tag(selected_test, tag)
+
+        if not removed:
+            console.print(
+                Panel.fit(
+                    f"[yellow]'{selected_test}' doesn't have the tag '{tag.strip().lower()}'[/yellow]",
+                    border_style="yellow",
+                    title="Not Tagged"
+                )
+            )
+            raise typer.Exit(code=1)
+
+        console.print(
+            f"[green]✅ Removed tag '{tag.strip().lower()}' from:[/green] [cyan]{selected_test}[/cyan]"
+        )
+
+    except DatabaseError as e:
+        console.print(
+            Panel.fit(
+                f"[bold red]❌ Database error[/bold red]\n\n{str(e)}",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def tags(
+    db_path: Optional[Path] = typer.Option(
+        None,
+        "--db",
+        "-d",
+        help="Database path (default: auto-detect)"
+    ),
+):
+    """
+    🏷️  List all tags and how many tests carry each.
+
+    Example:
+        $ flaktor tags
+    """
+    if db_path is None:
+        db_path = get_default_db_path()
+
+    if not ensure_database_exists(db_path):
+        console.print(
+            Panel.fit(
+                "[bold red]❌ Database not initialized[/bold red]\n\n"
+                f"💡 Run first: [yellow]flaktor init[/yellow]",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        with Database(db_path) as db:
+            rows = db.get_all_tags()
+
+        if not rows:
+            console.print()
+            console.print(
+                Panel.fit(
+                    "[yellow]No tags yet[/yellow]\n\n"
+                    f"💡 Tag a test: [cyan]flaktor tag <test> <tag>[/cyan]",
+                    border_style="yellow",
+                    title="Empty"
+                )
+            )
+            return
+
+        table = Table(title="Tags")
+        table.add_column("Tag", style="cyan")
+        table.add_column("Tests", justify="right")
+
+        for row in rows:
+            table.add_row(row["tag"], str(row["test_count"]))
+
+        console.print()
+        console.print(table)
+        console.print()
 
     except DatabaseError as e:
         console.print(

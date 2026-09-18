@@ -664,6 +664,94 @@ class TestFlakyAlerts:
         assert resolved == []
 
 
+class TestTags:
+    """Tests for test tagging/categorization."""
+
+    def test_add_tags(self, initialized_db: Database):
+        """Test adding tags to a test."""
+        added = initialized_db.add_tags("test_a", ["Integration", "Slow"])
+
+        assert added == ["integration", "slow"]
+        assert initialized_db.get_tags_for_test("test_a") == ["integration", "slow"]
+
+    def test_add_tags_normalizes_and_dedupes(self, initialized_db: Database):
+        """Test tags are trimmed, lowercased, and de-duplicated."""
+        added = initialized_db.add_tags("test_a", ["  Slow ", "slow", "SLOW", ""])
+
+        assert added == ["slow"]
+        assert initialized_db.get_tags_for_test("test_a") == ["slow"]
+
+    def test_add_tags_is_idempotent(self, initialized_db: Database):
+        """Test re-adding an existing tag doesn't duplicate or error."""
+        initialized_db.add_tags("test_a", ["slow"])
+        initialized_db.add_tags("test_a", ["slow", "integration"])
+
+        assert initialized_db.get_tags_for_test("test_a") == ["integration", "slow"]
+
+    def test_add_tags_empty_list(self, initialized_db: Database):
+        """Test adding only blank/whitespace tags is a no-op."""
+        added = initialized_db.add_tags("test_a", ["   ", ""])
+
+        assert added == []
+        assert initialized_db.get_tags_for_test("test_a") == []
+
+    def test_remove_tag(self, initialized_db: Database):
+        """Test removing a tag that exists."""
+        initialized_db.add_tags("test_a", ["slow", "integration"])
+
+        removed = initialized_db.remove_tag("test_a", "slow")
+
+        assert removed is True
+        assert initialized_db.get_tags_for_test("test_a") == ["integration"]
+
+    def test_remove_tag_not_present(self, initialized_db: Database):
+        """Test removing a tag that isn't there returns False."""
+        assert initialized_db.remove_tag("test_a", "slow") is False
+
+    def test_get_tests_by_tag(self, initialized_db: Database):
+        """Test looking up tests by tag."""
+        initialized_db.add_tags("test_a", ["integration"])
+        initialized_db.add_tags("test_b", ["integration"])
+        initialized_db.add_tags("test_c", ["slow"])
+
+        assert initialized_db.get_tests_by_tag("integration") == ["test_a", "test_b"]
+        assert initialized_db.get_tests_by_tag("INTEGRATION") == ["test_a", "test_b"]
+        assert initialized_db.get_tests_by_tag("nonexistent") == []
+
+    def test_get_all_tags(self, initialized_db: Database):
+        """Test tag summary counts, most-used first."""
+        initialized_db.add_tags("test_a", ["integration"])
+        initialized_db.add_tags("test_b", ["integration"])
+        initialized_db.add_tags("test_c", ["slow"])
+
+        tags = initialized_db.get_all_tags()
+
+        assert tags == [
+            {"tag": "integration", "test_count": 2},
+            {"tag": "slow", "test_count": 1},
+        ]
+
+    def test_get_all_tags_empty(self, initialized_db: Database):
+        """Test an empty tag table returns an empty list."""
+        assert initialized_db.get_all_tags() == []
+
+    def test_get_test_tags_map(self, initialized_db: Database):
+        """Test bulk retrieval of tags per test."""
+        initialized_db.add_tags("test_a", ["integration", "slow"])
+        initialized_db.add_tags("test_b", ["slow"])
+
+        tags_map = initialized_db.get_test_tags_map()
+
+        assert tags_map == {
+            "test_a": ["integration", "slow"],
+            "test_b": ["slow"],
+        }
+
+    def test_get_test_tags_map_empty(self, initialized_db: Database):
+        """Test bulk retrieval with no tags at all."""
+        assert initialized_db.get_test_tags_map() == {}
+
+
 class TestGetTestSummary:
     """Tests for test summary."""
 

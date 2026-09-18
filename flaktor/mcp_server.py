@@ -71,6 +71,7 @@ def build_server(db_path: Path) -> MCPServer:
             match = next((t for t in flaky if t["test_name"] == test_name), None)
             history = [dict(row) for row in db.get_test_history(test_name, limit=10)]
             quarantined = db.is_quarantined(test_name)
+            tags = db.get_tags_for_test(test_name)
 
         if not history:
             return {
@@ -85,6 +86,7 @@ def build_server(db_path: Path) -> MCPServer:
             "is_flaky": match is not None,
             "flip_rate": match["flip_rate"] if match else 0.0,
             "is_quarantined": quarantined,
+            "tags": tags,
             "recent_history": history,
         }
 
@@ -93,6 +95,23 @@ def build_server(db_path: Path) -> MCPServer:
         """List tests currently quarantined (excluded from flaky-test alerts)."""
         with Database(db_path) as db:
             return db.get_quarantined_tests()
+
+    @server.tool()
+    def list_tags() -> list[dict]:
+        """List every tag in use and how many tests carry it."""
+        with Database(db_path) as db:
+            return db.get_all_tags()
+
+    @server.tool()
+    def list_tests_by_tag(tag: str) -> list[str]:
+        """
+        List test names carrying a given tag.
+
+        Args:
+            tag: Tag to filter by (case-insensitive).
+        """
+        with Database(db_path) as db:
+            return db.get_tests_by_tag(tag)
 
     @server.tool()
     def list_trending_tests(

@@ -232,6 +232,41 @@ class TestListCommand:
         assert result.exit_code == 0
         assert "No quarantined tests" in result.stdout
 
+    def test_list_tag_filter(self, initialized_db: Path, sample_xml: Path):
+        """Test list --tag shows only tests with that tag."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+        runner.invoke(app, ["tag", "test_pass", "smoke", "--db", str(initialized_db)])
+
+        result = runner.invoke(
+            app, ["list", "--tag", "smoke", "--db", str(initialized_db)]
+        )
+
+        assert result.exit_code == 0
+        assert "TestClass.test_pass" in result.stdout
+        assert "TestClass.test_fail" not in result.stdout
+        assert "(tag: smoke)" in result.stdout
+
+    def test_list_tag_filter_no_match(self, initialized_db: Path, sample_xml: Path):
+        """Test list --tag with a tag nothing carries."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+
+        result = runner.invoke(
+            app, ["list", "--tag", "nonexistent", "--db", str(initialized_db)]
+        )
+
+        assert result.exit_code == 0
+        assert "No tests found with tag" in result.stdout
+
+    def test_list_shows_tags_column(self, initialized_db: Path, sample_xml: Path):
+        """Test the default list view shows a test's tags."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+        runner.invoke(app, ["tag", "test_pass", "smoke", "--db", str(initialized_db)])
+
+        result = runner.invoke(app, ["list", "--db", str(initialized_db)])
+
+        assert result.exit_code == 0
+        assert "smoke" in result.stdout
+
 
 class TestQuarantineCommand:
     """Tests for the quarantine and unquarantine commands."""
@@ -360,6 +395,120 @@ class TestQuarantineCommand:
             ],
         )
         assert "T.test_x" in result_included.stdout
+
+
+class TestTagCommand:
+    """Tests for the tag, untag, and tags commands."""
+
+    def test_tag_database_not_initialized(self, tmp_path: Path):
+        """Test tag with uninitialized database."""
+        db_path = tmp_path / "uninit.db"
+
+        result = runner.invoke(app, ["tag", "test_x", "smoke", "--db", str(db_path)])
+
+        assert result.exit_code == 1
+        assert "Database not initialized" in result.stdout
+
+    def test_tag_test_not_found(self, initialized_db: Path, sample_xml: Path):
+        """Test tag with a name that matches nothing."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+
+        result = runner.invoke(
+            app, ["tag", "nonexistent_test", "smoke", "--db", str(initialized_db)]
+        )
+
+        assert result.exit_code == 1
+        assert "No tests found matching" in result.stdout
+
+    def test_tag_ambiguous_match(self, initialized_db: Path, sample_xml: Path):
+        """Test tag with a name matching multiple tests."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+
+        result = runner.invoke(
+            app, ["tag", "test", "smoke", "--db", str(initialized_db)]
+        )
+
+        assert result.exit_code == 1
+        assert "Multiple Matches" in result.stdout
+
+    def test_tag_success_single(self, initialized_db: Path, sample_xml: Path):
+        """Test tagging a test with a single tag."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+
+        result = runner.invoke(
+            app, ["tag", "test_pass", "smoke", "--db", str(initialized_db)]
+        )
+
+        assert result.exit_code == 0
+        assert "Tagged" in result.stdout
+        assert "TestClass.test_pass" in result.stdout
+        assert "smoke" in result.stdout
+
+    def test_tag_success_multiple_tags(self, initialized_db: Path, sample_xml: Path):
+        """Test tagging a test with multiple tags at once."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+
+        result = runner.invoke(
+            app,
+            ["tag", "test_pass", "smoke", "integration", "--db", str(initialized_db)],
+        )
+
+        assert result.exit_code == 0
+        assert "integration, smoke" in result.stdout
+
+    def test_tags_empty(self, initialized_db: Path):
+        """Test tags command when nothing is tagged."""
+        result = runner.invoke(app, ["tags", "--db", str(initialized_db)])
+
+        assert result.exit_code == 0
+        assert "No tags yet" in result.stdout
+
+    def test_tags_shows_counts(self, initialized_db: Path, sample_xml: Path):
+        """Test tags command shows tag counts across tests."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+        runner.invoke(app, ["tag", "test_pass", "smoke", "--db", str(initialized_db)])
+        runner.invoke(app, ["tag", "test_fail", "smoke", "--db", str(initialized_db)])
+
+        result = runner.invoke(app, ["tags", "--db", str(initialized_db)])
+
+        assert result.exit_code == 0
+        assert "smoke" in result.stdout
+        assert "2" in result.stdout
+
+    def test_untag_database_not_initialized(self, tmp_path: Path):
+        """Test untag with uninitialized database."""
+        db_path = tmp_path / "uninit.db"
+
+        result = runner.invoke(app, ["untag", "test_x", "smoke", "--db", str(db_path)])
+
+        assert result.exit_code == 1
+        assert "Database not initialized" in result.stdout
+
+    def test_untag_not_tagged(self, initialized_db: Path, sample_xml: Path):
+        """Test untag when the test doesn't have that tag."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+
+        result = runner.invoke(
+            app, ["untag", "test_pass", "smoke", "--db", str(initialized_db)]
+        )
+
+        assert result.exit_code == 1
+        assert "doesn't have the tag" in result.stdout
+
+    def test_untag_success(self, initialized_db: Path, sample_xml: Path):
+        """Test removing a tag from a test."""
+        runner.invoke(app, ["upload", str(sample_xml), "--db", str(initialized_db)])
+        runner.invoke(app, ["tag", "test_pass", "smoke", "--db", str(initialized_db)])
+
+        result = runner.invoke(
+            app, ["untag", "test_pass", "smoke", "--db", str(initialized_db)]
+        )
+
+        assert result.exit_code == 0
+        assert "Removed tag" in result.stdout
+
+        tags_result = runner.invoke(app, ["tags", "--db", str(initialized_db)])
+        assert "No tags yet" in tags_result.stdout
 
 
 class TestReportCommand:

@@ -23,7 +23,7 @@ class DatabaseError(Exception):
 # below - migrate() applies pending entries in order. The "latest" version
 # (see latest_schema_version()) is always derived from this list, so it
 # can't drift out of sync with the constant below.
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 
 def _create_quarantined_tests_table(cursor: sqlite3.Cursor) -> None:
@@ -47,9 +47,26 @@ def _create_flaky_alerts_table(cursor: sqlite3.Cursor) -> None:
     """)
 
 
+def _create_test_tags_table(cursor: sqlite3.Cursor) -> None:
+    """Create the test_tags table (shared by initialize_schema and migration)."""
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS test_tags (
+            test_name TEXT NOT NULL,
+            tag TEXT NOT NULL,
+            tagged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (test_name, tag)
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_test_tags_tag
+        ON test_tags(tag)
+    """)
+
+
 _MIGRATIONS: List[Tuple[int, str, Callable[[sqlite3.Cursor], None]]] = [
     (2, "add quarantined_tests table for quarantine support", _create_quarantined_tests_table),
     (3, "add flaky_alerts table for webhook notification support", _create_flaky_alerts_table),
+    (4, "add test_tags table for test tagging/categorization", _create_test_tags_table),
 ]
 
 
@@ -204,6 +221,9 @@ class Database:
 
             # Flaky alert state - tracks which tests have already been notified about
             _create_flaky_alerts_table(cursor)
+
+            # Test tags - freeform labels for grouping/filtering tests
+            _create_test_tags_table(cursor)
 
             # Store schema version
             cursor.execute("""
@@ -953,6 +973,111 @@ class Database:
             raise DatabaseError(f"Failed to update flaky alert state: {e}")
 
         return newly_flaky, resolved
+
+    def add_tags(self, test_name: str, tags: List[str]) -> List[str]:
+        """
+        Add one or more tags to a test. Tags already present are left as-is.
+
+        Tags are normalized (trimmed, lowercased) for consistent filtering.
+
+        Args:
+            test_name: Full test identifier
+            tags: Tag values to add
+
+        Returns:
+            The normalized tags that were added (empty entries dropped)
+        """
+        if not self.conn:
+            raise DatabaseError("Database not connected.")
+
+        normalized = sorted({t.strip().lower() for t in tags if t.strip()})
+        if not normalized:
+            return []
+
+        try:
+            cursor = self.conn.cursor()
+            now = datetime.now().isoformat()
+            for tag in normalized:
+                cursor.execute(
+                    "INSERT OR IGNORE INTO test_tags (test_name, tag, tagged_at) VALUES (?, ?, ?)",
+                    (test_name, tag, now),
+                )
+            self.conn.commit()
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            raise DatabaseError(f"Failed to tag test '{test_name}': {e}")
+
+        return normalized
+
+    def remove_tag(self, test_name: str, tag: str) -> bool:
+        """
+        Remove a single tag from a test.
+
+        Returns:
+            True if the tag was present and has now been removed, False if
+            the test didn't have that tag
+        """
+        if not self.conn:
+            raise DatabaseError("Database not connected.")
+
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "DELETE FROM test_tags WHERE test_name = ? AND tag = ?",
+            (test_name, tag.strip().lower()),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def get_tags_for_test(self, test_name: str) -> List[str]:
+        """Get all tags for a single test, alphabetically."""
+        if not self.conn:
+            raise DatabaseError("Database not connected.")
+
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT tag FROM test_tags WHERE test_name = ? ORDER BY tag",
+            (test_name,),
+        )
+        return [row[0] for row in cursor.fetchall()]
+
+    def get_tests_by_tag(self, tag: str) -> List[str]:
+        """Get all test names carrying a given tag, alphabetically."""
+        if not self.conn:
+            raise DatabaseError("Database not connected.")
+
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT test_name FROM test_tags WHERE tag = ? ORDER BY test_name",
+            (tag.strip().lower(),),
+        )
+        return [row[0] for row in cursor.fetchall()]
+
+    def get_all_tags(self) -> List[dict]:
+        """Get every tag with how many tests carry it, most-used first."""
+        if not self.conn:
+            raise DatabaseError("Database not connected.")
+
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT tag, COUNT(*) as test_count
+            FROM test_tags
+            GROUP BY tag
+            ORDER BY test_count DESC, tag ASC
+        """)
+        return [{"tag": row[0], "test_count": row[1]} for row in cursor.fetchall()]
+
+    def get_test_tags_map(self) -> dict:
+        """Get a mapping of test_name -> sorted list of tags, for bulk display."""
+        if not self.conn:
+            raise DatabaseError("Database not connected.")
+
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT test_name, tag FROM test_tags ORDER BY test_name, tag")
+
+        result: dict = {}
+        for test_name, tag in cursor.fetchall():
+            result.setdefault(test_name, []).append(tag)
+        return result
 
     def purge_old_data(
         self,
