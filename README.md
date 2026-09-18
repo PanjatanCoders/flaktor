@@ -53,6 +53,7 @@ flaktor report
 | `flaktor export --output <file>` | Export test data to JSON or CSV |
 | `flaktor compare <branch-a> <branch-b>` | Compare flakiness between two branches |
 | `flaktor trend` | Show flakiness trends over time (improving/worsening) |
+| `flaktor notify` | Send a webhook alert for newly detected flaky tests |
 | `flaktor clean` | Remove old data from the database |
 | `flaktor info` | Show database information |
 | `flaktor migrate` | Apply pending database schema migrations |
@@ -78,6 +79,18 @@ Flaktor is designed for CI/CD pipelines. Track test results across runs to detec
 script:
   - flaktor upload results.xml --branch "$CI_COMMIT_REF_NAME" --commit "$CI_COMMIT_SHA"
 ```
+
+### Webhook Alerts
+
+Get notified when a new flaky test shows up, right after uploading results:
+
+```bash
+export FLAKTOR_WEBHOOK_URL=https://hooks.slack.com/services/...
+flaktor upload results.xml
+flaktor notify
+```
+
+`flaktor notify` only alerts on tests that weren't already flagged flaky, so re-running it in CI won't spam the same alert every build. The payload's `text` field works as-is with Slack Incoming Webhooks.
 
 See [docs/ci-cd-integration.md](docs/ci-cd-integration.md) for complete examples for:
 - GitHub Actions

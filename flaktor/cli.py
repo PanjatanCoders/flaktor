@@ -14,8 +14,10 @@ from datetime import datetime
 import csv
 import glob as glob_module
 import json
+import os
 
 from .database import Database, DatabaseError, latest_schema_version
+from .notifier import build_flaky_alert_payload, send_webhook, NotifierError
 from .parser import (
     parse_junit_xml,
     parse_multiple_files,
@@ -1608,6 +1610,154 @@ def trend(
         if len(rows) == limit:
             console.print(f"[dim]Showing {limit} results. Use --limit to see more.[/dim]")
 
+    except DatabaseError as e:
+        console.print(
+            Panel.fit(
+                f"[bold red]❌ Database error[/bold red]\n\n{str(e)}",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def notify(
+    db_path: Optional[Path] = typer.Option(
+        None,
+        "--db",
+        "-d",
+        help="Database path (default: auto-detect)"
+    ),
+    webhook: Optional[str] = typer.Option(
+        None,
+        "--webhook",
+        help="Webhook URL to POST to (default: FLAKTOR_WEBHOOK_URL env var)"
+    ),
+    days: int = typer.Option(
+        30,
+        "--days",
+        help="Number of days to look back for flaky detection"
+    ),
+    min_runs: int = typer.Option(
+        5,
+        "--min-runs",
+        help="Minimum runs required for flaky detection"
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Show what would be sent without sending or updating alert state"
+    ),
+):
+    """
+    🔔 Send a webhook alert for newly detected flaky tests.
+
+    Compares the current flaky-test list against what's already been
+    alerted on and POSTs a notification only for tests that are newly
+    flaky, so re-running this in CI won't spam the same alert every
+    build. A test that later gets fixed and then regresses again will
+    trigger a fresh alert. Designed to run right after `flaktor upload`.
+
+    Set the webhook URL via --webhook or the FLAKTOR_WEBHOOK_URL
+    environment variable - the payload's "text" field works as-is with
+    Slack Incoming Webhooks.
+
+    Examples:
+        # After uploading results in CI
+        $ export FLAKTOR_WEBHOOK_URL=https://hooks.slack.com/services/...
+        $ flaktor notify
+
+        # Preview without sending or updating alert state
+        $ flaktor notify --dry-run
+    """
+    if db_path is None:
+        db_path = get_default_db_path()
+
+    if not ensure_database_exists(db_path):
+        console.print(
+            Panel.fit(
+                "[bold red]❌ Database not initialized[/bold red]\n\n"
+                f"💡 Run first: [yellow]flaktor init[/yellow]",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+    webhook_url = webhook or os.environ.get("FLAKTOR_WEBHOOK_URL")
+
+    try:
+        with Database(db_path) as db:
+            current_flaky = db.get_flaky_tests(min_runs=min_runs, lookback_days=days)
+            current_names = [t["test_name"] for t in current_flaky]
+            already_alerted = set(db.get_alerted_test_names())
+
+        newly_flaky_names = sorted(set(current_names) - already_alerted)
+
+        if not newly_flaky_names:
+            console.print()
+            console.print(
+                Panel.fit(
+                    f"[green]✅ No new flaky tests[/green]\n\n"
+                    f"{len(current_names)} test(s) currently flaky, all already alerted on.",
+                    border_style="green",
+                    title="Nothing to Notify"
+                )
+            )
+            return
+
+        by_name = {t["test_name"]: t for t in current_flaky}
+        new_flaky_tests = [by_name[name] for name in newly_flaky_names]
+        payload = build_flaky_alert_payload(new_flaky_tests)
+
+        if dry_run:
+            console.print()
+            console.print(
+                Panel.fit(
+                    payload["text"] + "\n\n[dim]Dry run - nothing was sent or recorded.[/dim]",
+                    border_style="yellow",
+                    title="Would Notify"
+                )
+            )
+            return
+
+        if not webhook_url:
+            console.print()
+            console.print(
+                Panel.fit(
+                    f"[yellow]{payload['text']}[/yellow]\n\n"
+                    f"💡 No webhook configured - set [cyan]--webhook[/cyan] or the "
+                    f"[cyan]FLAKTOR_WEBHOOK_URL[/cyan] environment variable to send alerts.",
+                    border_style="yellow",
+                    title="Not Sent"
+                )
+            )
+            return
+
+        send_webhook(webhook_url, payload)
+
+        with Database(db_path) as db:
+            db.sync_flaky_alerts(current_names)
+
+        console.print()
+        console.print(
+            Panel.fit(
+                f"[bold green]✅ Notified webhook[/bold green]\n\n{payload['text']}",
+                border_style="green",
+                title="Notification Sent"
+            )
+        )
+
+    except NotifierError as e:
+        console.print(
+            Panel.fit(
+                f"[bold red]❌ Failed to send webhook[/bold red]\n\n{str(e)}",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
     except DatabaseError as e:
         console.print(
             Panel.fit(

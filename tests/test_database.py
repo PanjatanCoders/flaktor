@@ -619,6 +619,51 @@ class TestGetTrendingTests:
         assert trends[0]["test_name"] == "test_worse"
 
 
+class TestFlakyAlerts:
+    """Tests for flaky-test alert state (used by webhook notifications)."""
+
+    def test_get_alerted_test_names_empty(self, initialized_db: Database):
+        """Test a fresh database has no recorded alerts."""
+        assert initialized_db.get_alerted_test_names() == []
+
+    def test_sync_flaky_alerts_records_new(self, initialized_db: Database):
+        """Test previously-unseen flaky tests are recorded as newly flaky."""
+        newly_flaky, resolved = initialized_db.sync_flaky_alerts(["test_a", "test_b"])
+
+        assert newly_flaky == ["test_a", "test_b"]
+        assert resolved == []
+        assert set(initialized_db.get_alerted_test_names()) == {"test_a", "test_b"}
+
+    def test_sync_flaky_alerts_no_repeat_alert(self, initialized_db: Database):
+        """Test a test already alerted on isn't reported as newly flaky again."""
+        initialized_db.sync_flaky_alerts(["test_a"])
+
+        newly_flaky, resolved = initialized_db.sync_flaky_alerts(["test_a"])
+
+        assert newly_flaky == []
+        assert resolved == []
+
+    def test_sync_flaky_alerts_clears_resolved(self, initialized_db: Database):
+        """Test a test no longer flaky is removed from the alert state."""
+        initialized_db.sync_flaky_alerts(["test_a", "test_b"])
+
+        newly_flaky, resolved = initialized_db.sync_flaky_alerts(["test_a"])
+
+        assert newly_flaky == []
+        assert resolved == ["test_b"]
+        assert initialized_db.get_alerted_test_names() == ["test_a"]
+
+    def test_sync_flaky_alerts_realerts_after_resolution(self, initialized_db: Database):
+        """Test a test re-alerts after being cleared and regressing again."""
+        initialized_db.sync_flaky_alerts(["test_a"])
+        initialized_db.sync_flaky_alerts([])  # test_a resolved, cleared from state
+
+        newly_flaky, resolved = initialized_db.sync_flaky_alerts(["test_a"])
+
+        assert newly_flaky == ["test_a"]
+        assert resolved == []
+
+
 class TestGetTestSummary:
     """Tests for test summary."""
 

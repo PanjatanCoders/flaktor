@@ -390,6 +390,16 @@ Create regular reports for team visibility:
 flaktor report --days 7 --output weekly-report.txt
 ```
 
+### 6. Alert on New Flaky Tests
+
+Run `flaktor notify` right after `flaktor upload` to get a webhook alert whenever a test becomes newly flaky. It only fires for tests that weren't already flagged, so it's safe to run on every build:
+
+```bash
+export FLAKTOR_WEBHOOK_URL=https://hooks.slack.com/services/...
+flaktor upload results.xml --branch "$BRANCH" --commit "$COMMIT"
+flaktor notify
+```
+
 ---
 
 ## Troubleshooting

@@ -597,6 +597,165 @@ class TestTrendCommand:
         assert "No trend data" in result.stdout
 
 
+class TestNotifyCommand:
+    """Tests for the notify command."""
+
+    def _make_flaky(self, db_path: Path, tmp_path: Path, name: str = "test_flaky"):
+        """Upload alternating pass/fail results to create a flaky test."""
+        for i in range(6):
+            failed = i % 2 == 1
+            failure_block = '<failure message="boom">boom</failure>' if failed else ""
+            xml_file = tmp_path / f"{name}-{i}.xml"
+            xml_file.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
+            <testsuite name="s" tests="1" failures="{1 if failed else 0}">
+                <testcase name="{name}" classname="T" time="0.1">{failure_block}</testcase>
+            </testsuite>
+            """)
+            runner.invoke(app, ["upload", str(xml_file), "--db", str(db_path)])
+
+    def test_notify_database_not_initialized(self, tmp_path: Path):
+        """Test notify with uninitialized database."""
+        db_path = tmp_path / "uninit.db"
+
+        result = runner.invoke(app, ["notify", "--db", str(db_path)])
+
+        assert result.exit_code == 1
+        assert "Database not initialized" in result.stdout
+
+    def test_notify_no_flaky_tests(self, initialized_db: Path, monkeypatch):
+        """Test notify when nothing is currently flaky."""
+        monkeypatch.delenv("FLAKTOR_WEBHOOK_URL", raising=False)
+
+        result = runner.invoke(app, ["notify", "--db", str(initialized_db)])
+
+        assert result.exit_code == 0
+        assert "No new flaky tests" in result.stdout
+
+    def test_notify_no_webhook_configured(
+        self, initialized_db: Path, tmp_path: Path, monkeypatch
+    ):
+        """Test notify warns and doesn't record state when no webhook is set."""
+        monkeypatch.delenv("FLAKTOR_WEBHOOK_URL", raising=False)
+        self._make_flaky(initialized_db, tmp_path)
+
+        result = runner.invoke(
+            app, ["notify", "--db", str(initialized_db), "--min-runs", "5"]
+        )
+
+        assert result.exit_code == 0
+        assert "No webhook configured" in result.stdout
+
+        with Database(initialized_db) as db:
+            assert db.get_alerted_test_names() == []
+
+    def test_notify_dry_run(self, initialized_db: Path, tmp_path: Path, monkeypatch):
+        """Test --dry-run previews the alert without sending or recording state."""
+        monkeypatch.delenv("FLAKTOR_WEBHOOK_URL", raising=False)
+        self._make_flaky(initialized_db, tmp_path)
+
+        result = runner.invoke(
+            app,
+            ["notify", "--db", str(initialized_db), "--min-runs", "5", "--dry-run"],
+        )
+
+        assert result.exit_code == 0
+        assert "T.test_flaky" in result.stdout
+        assert "Dry run" in result.stdout
+
+        with Database(initialized_db) as db:
+            assert db.get_alerted_test_names() == []
+
+    def test_notify_sends_webhook_and_records_state(
+        self, initialized_db: Path, tmp_path: Path, monkeypatch
+    ):
+        """Test a successful send records alert state and isn't repeated next run."""
+        import flaktor.cli as cli_module
+
+        self._make_flaky(initialized_db, tmp_path)
+
+        sent = {}
+
+        def fake_send_webhook(url, payload):
+            sent["url"] = url
+            sent["payload"] = payload
+
+        monkeypatch.setattr(cli_module, "send_webhook", fake_send_webhook)
+
+        result = runner.invoke(
+            app,
+            [
+                "notify", "--db", str(initialized_db), "--min-runs", "5",
+                "--webhook", "https://example.com/hook",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "Notification Sent" in result.stdout
+        assert sent["url"] == "https://example.com/hook"
+        assert sent["payload"]["count"] == 1
+
+        with Database(initialized_db) as db:
+            assert db.get_alerted_test_names() == ["T.test_flaky"]
+
+        result_again = runner.invoke(
+            app,
+            [
+                "notify", "--db", str(initialized_db), "--min-runs", "5",
+                "--webhook", "https://example.com/hook",
+            ],
+        )
+        assert "No new flaky tests" in result_again.stdout
+
+    def test_notify_uses_env_var_webhook(
+        self, initialized_db: Path, tmp_path: Path, monkeypatch
+    ):
+        """Test FLAKTOR_WEBHOOK_URL is used when --webhook isn't passed."""
+        import flaktor.cli as cli_module
+
+        self._make_flaky(initialized_db, tmp_path)
+
+        sent = {}
+        monkeypatch.setattr(
+            cli_module, "send_webhook", lambda url, payload: sent.update(url=url)
+        )
+        monkeypatch.setenv("FLAKTOR_WEBHOOK_URL", "https://example.com/env-hook")
+
+        result = runner.invoke(
+            app, ["notify", "--db", str(initialized_db), "--min-runs", "5"]
+        )
+
+        assert result.exit_code == 0
+        assert sent["url"] == "https://example.com/env-hook"
+
+    def test_notify_webhook_failure_not_recorded(
+        self, initialized_db: Path, tmp_path: Path, monkeypatch
+    ):
+        """Test a failed send reports an error and leaves alert state untouched."""
+        import flaktor.cli as cli_module
+        from flaktor.notifier import NotifierError
+
+        self._make_flaky(initialized_db, tmp_path)
+
+        def fake_send_webhook(url, payload):
+            raise NotifierError("boom")
+
+        monkeypatch.setattr(cli_module, "send_webhook", fake_send_webhook)
+
+        result = runner.invoke(
+            app,
+            [
+                "notify", "--db", str(initialized_db), "--min-runs", "5",
+                "--webhook", "https://example.com/hook",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "Failed to send webhook" in result.stdout
+
+        with Database(initialized_db) as db:
+            assert db.get_alerted_test_names() == []
+
+
 class TestExportCommand:
     """Tests for the export command."""
 

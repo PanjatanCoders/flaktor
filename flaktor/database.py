@@ -23,7 +23,7 @@ class DatabaseError(Exception):
 # below - migrate() applies pending entries in order. The "latest" version
 # (see latest_schema_version()) is always derived from this list, so it
 # can't drift out of sync with the constant below.
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 def _create_quarantined_tests_table(cursor: sqlite3.Cursor) -> None:
@@ -37,8 +37,19 @@ def _create_quarantined_tests_table(cursor: sqlite3.Cursor) -> None:
     """)
 
 
+def _create_flaky_alerts_table(cursor: sqlite3.Cursor) -> None:
+    """Create the flaky_alerts table (shared by initialize_schema and migration)."""
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS flaky_alerts (
+            test_name TEXT PRIMARY KEY,
+            alerted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
 _MIGRATIONS: List[Tuple[int, str, Callable[[sqlite3.Cursor], None]]] = [
     (2, "add quarantined_tests table for quarantine support", _create_quarantined_tests_table),
+    (3, "add flaky_alerts table for webhook notification support", _create_flaky_alerts_table),
 ]
 
 
@@ -190,6 +201,9 @@ class Database:
 
             # Quarantined tests - excluded from flaky-test detection
             _create_quarantined_tests_table(cursor)
+
+            # Flaky alert state - tracks which tests have already been notified about
+            _create_flaky_alerts_table(cursor)
 
             # Store schema version
             cursor.execute("""
@@ -888,6 +902,57 @@ class Database:
             {"test_name": row[0], "reason": row[1], "quarantined_at": row[2]}
             for row in cursor.fetchall()
         ]
+
+    def get_alerted_test_names(self) -> List[str]:
+        """Get test names already recorded as alerted-on for being flaky."""
+        if not self.conn:
+            raise DatabaseError("Database not connected.")
+
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT test_name FROM flaky_alerts")
+        return [row[0] for row in cursor.fetchall()]
+
+    def sync_flaky_alerts(self, current_flaky_names: List[str]) -> Tuple[List[str], List[str]]:
+        """
+        Diff the current flaky-test set against what's already been alerted
+        on, and update the recorded alert state to match.
+
+        Tests that are newly flaky (not already recorded) are added to the
+        alert state; tests that are no longer flaky are removed, so a test
+        that regresses again later triggers a fresh alert instead of
+        staying silently suppressed forever.
+
+        Args:
+            current_flaky_names: Test names currently flagged as flaky
+
+        Returns:
+            Tuple of (newly_flaky, resolved) test name lists, each sorted
+        """
+        if not self.conn:
+            raise DatabaseError("Database not connected.")
+
+        already_alerted = set(self.get_alerted_test_names())
+        current = set(current_flaky_names)
+
+        newly_flaky = sorted(current - already_alerted)
+        resolved = sorted(already_alerted - current)
+
+        try:
+            cursor = self.conn.cursor()
+            now = datetime.now().isoformat()
+            for test_name in newly_flaky:
+                cursor.execute(
+                    "INSERT INTO flaky_alerts (test_name, alerted_at) VALUES (?, ?)",
+                    (test_name, now),
+                )
+            for test_name in resolved:
+                cursor.execute("DELETE FROM flaky_alerts WHERE test_name = ?", (test_name,))
+            self.conn.commit()
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            raise DatabaseError(f"Failed to update flaky alert state: {e}")
+
+        return newly_flaky, resolved
 
     def purge_old_data(
         self,
