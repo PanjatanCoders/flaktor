@@ -18,6 +18,7 @@ import html
 import json
 import os
 
+from . import __version__
 from .config import Config, ConfigError, load_config, validate_config
 from .database import Database, DatabaseError, latest_schema_version
 from .notifier import build_flaky_alert_payload, send_webhook, NotifierError
@@ -3040,7 +3041,7 @@ def main(
     Stop guessing. Start knowing why your tests fail.
     """
     if version:
-        console.print("[bold cyan]Flaktor[/bold cyan] version [green]0.1.0[/green]")
+        console.print(f"[bold cyan]Flaktor[/bold cyan] version [green]{__version__}[/green]")
         console.print("[dim]Framework-agnostic flaky test intelligence[/dim]")
         raise typer.Exit()
     elif ctx.invoked_subcommand is None:

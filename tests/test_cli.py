@@ -7,6 +7,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 from datetime import datetime, timedelta
 
+from flaktor import __version__
 from flaktor.cli import app
 from flaktor.database import Database
 from flaktor.models import TestRun, TestResult, TestStatus
@@ -1334,7 +1335,7 @@ class TestVersionFlag:
 
         assert result.exit_code == 0
         assert "Flaktor" in result.stdout
-        assert "0.1.0" in result.stdout
+        assert __version__ in result.stdout
 
 
 class TestHelpFlag:

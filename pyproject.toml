@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flaktor"
-version = "0.1.0"
+version = "0.2.0"
 description = "Framework-agnostic flaky test intelligence tool - Track, analyze, and fix flaky tests"
 authors = [
     { name = "Panjatan Labs", email = "panjatan.tech@gmail.com" }
