@@ -6,6 +6,7 @@ Built with Typer for professional, user-friendly command-line experience.
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from pathlib import Path
@@ -17,6 +18,7 @@ import html
 import json
 import os
 
+from .config import Config, ConfigError, load_config, validate_config
 from .database import Database, DatabaseError, latest_schema_version
 from .notifier import build_flaky_alert_payload, send_webhook, NotifierError
 from .parser import (
@@ -40,14 +42,26 @@ app = typer.Typer(
 )
 
 
+# Config loaded by the app callback for the current invocation. Held at module
+# level (not on the Click context) because Typer bundles its own Click in
+# recent versions, so there's no single context API that works across them.
+_active_config = Config()
+
+
+def get_config() -> Config:
+    """Get the config loaded for this invocation (empty if none was loaded)."""
+    return _active_config
+
+
 def get_default_db_path() -> Path:
     """
     Get the default database path.
     
     Priority:
     1. FLAKTOR_DB environment variable
-    2. .flaktor/flaktor.db in current directory
-    3. ~/.flaktor/flaktor.db (user home)
+    2. `db` setting in .flaktorrc
+    3. .flaktor/flaktor.db in current directory
+    4. ~/.flaktor/flaktor.db (user home)
     """
     import os
     
@@ -55,6 +69,11 @@ def get_default_db_path() -> Path:
     env_path = os.environ.get("FLAKTOR_DB")
     if env_path:
         return Path(env_path)
+    
+    # Check config file
+    config_db = get_config().db
+    if config_db:
+        return config_db
     
     # Check local directory
     local_path = Path(".flaktor/flaktor.db")
@@ -2306,7 +2325,7 @@ def notify(
     webhook: Optional[str] = typer.Option(
         None,
         "--webhook",
-        help="Webhook URL to POST to (default: FLAKTOR_WEBHOOK_URL env var)"
+        help="Webhook URL to POST to (default: FLAKTOR_WEBHOOK_URL env var, then .flaktorrc)"
     ),
     days: int = typer.Option(
         30,
@@ -2359,7 +2378,7 @@ def notify(
         )
         raise typer.Exit(code=1)
 
-    webhook_url = webhook or os.environ.get("FLAKTOR_WEBHOOK_URL")
+    webhook_url = webhook or os.environ.get("FLAKTOR_WEBHOOK_URL") or get_config().webhook
 
     try:
         with Database(db_path) as db:
@@ -2402,7 +2421,8 @@ def notify(
                 Panel.fit(
                     f"[yellow]{payload['text']}[/yellow]\n\n"
                     f"💡 No webhook configured - set [cyan]--webhook[/cyan] or the "
-                    f"[cyan]FLAKTOR_WEBHOOK_URL[/cyan] environment variable to send alerts.",
+                    f"[cyan]FLAKTOR_WEBHOOK_URL[/cyan] environment variable (or "
+                    f"[cyan]webhook[/cyan] in .flaktorrc) to send alerts.",
                     border_style="yellow",
                     title="Not Sent"
                 )
@@ -2926,6 +2946,78 @@ def mcp(
     build_server(db_path).run()
 
 
+def _mask_secret(value: str) -> str:
+    """Show a URL's scheme and host only - webhook URLs embed a secret token."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(value)
+    if parts.scheme and parts.netloc:
+        return f"{parts.scheme}://{parts.netloc}/…"
+    return "…"
+
+
+@app.command()
+def config():
+    """
+    ⚙️  Show the active config file and the defaults it sets.
+
+    Flaktor reads `.flaktorrc` (TOML) from the current directory or a parent
+    directory, then from your home directory. Use the global `--config` option
+    or the FLAKTOR_CONFIG environment variable to point at a specific file.
+
+    Example .flaktorrc:
+        db = ".flaktor/flaktor.db"
+
+        [trend]
+        days = 14
+
+        [notify]
+        min_runs = 10
+
+    Precedence: command-line flag > environment variable > .flaktorrc > default.
+    """
+    active = get_config()
+
+    if active.path is None:
+        console.print(
+            Panel.fit(
+                "[yellow]No config file found[/yellow]\n\n"
+                "Flaktor looks for [cyan].flaktorrc[/cyan] in the current directory, "
+                "its parents, then your home directory.\n"
+                "Run [yellow]flaktor config --help[/yellow] for the format.",
+                border_style="yellow",
+                title="Config"
+            )
+        )
+        return
+
+    table = Table(title=f"Config: {active.path}")
+    table.add_column("Section", style="cyan")
+    table.add_column("Setting")
+    table.add_column("Value")
+
+    for key, value in active.settings.items():
+        shown = _mask_secret(value) if key == "webhook" else value
+        table.add_row("(global)", key, shown)
+    for command, options in active.commands.items():
+        for option, value in options.items():
+            shown = _mask_secret(value) if option == "webhook" and isinstance(value, str) else str(value)
+            table.add_row(command, option, shown)
+
+    console.print()
+    console.print(table)
+    console.print()
+
+
+def _known_options() -> dict:
+    """Map each command name to its parameter names, for config validation."""
+    group = typer.main.get_command(app)
+    return {
+        name: {param.name for param in command.params}
+        for name, command in group.commands.items()
+    }
+
+
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
@@ -2934,7 +3026,13 @@ def main(
         "--version",
         "-v",
         help="Show Flaktor version"
-    )
+    ),
+    config_path: Optional[Path] = typer.Option(
+        None,
+        "--config",
+        envvar="FLAKTOR_CONFIG",
+        help="Config file to use (default: .flaktorrc in cwd, parents, or home)"
+    ),
 ):
     """
     🔍 Flaktor - Flaky test detection made simple.
@@ -2947,6 +3045,24 @@ def main(
         raise typer.Exit()
     elif ctx.invoked_subcommand is None:
         console.print(ctx.get_help())
+        return
+
+    try:
+        loaded = load_config(config_path)
+        validate_config(loaded, _known_options())
+    except ConfigError as e:
+        console.print(
+            Panel.fit(
+                f"[bold red]❌ Invalid config[/bold red]\n\n{escape(str(e))}",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+    global _active_config
+    _active_config = loaded
+    ctx.default_map = loaded.default_map()
 
 
 if __name__ == "__main__":

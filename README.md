@@ -58,6 +58,7 @@ flaktor report
 | `flaktor export --output <file>` | Export test data to JSON or CSV |
 | `flaktor compare <branch-a> <branch-b>` | Compare flakiness between two branches |
 | `flaktor trend` | Show flakiness trends over time (improving/worsening) |
+| `flaktor config` | Show the active `.flaktorrc` and the defaults it sets |
 | `flaktor perf` | Show test duration trends and detect slowdowns |
 | `flaktor notify` | Send a webhook alert for newly detected flaky tests |
 | `flaktor clean` | Remove old data from the database |
@@ -104,6 +105,25 @@ See [docs/ci-cd-integration.md](docs/ci-cd-integration.md) for complete examples
 - Jenkins
 - CircleCI
 - Azure DevOps
+
+## Configuration
+
+Put defaults in a `.flaktorrc` file (TOML) so you don't repeat flags on every command. Flaktor looks in the current directory, then each parent directory, then your home directory. Use `flaktor --config path/to/file` or the `FLAKTOR_CONFIG` environment variable to point at a specific file.
+
+```toml
+# Global settings
+db = ".flaktor/flaktor.db"        # relative paths are relative to this file
+webhook = "https://hooks.slack.com/services/..."
+
+# Per-command defaults: use the command's option names (`--min-runs` -> min_runs)
+[trend]
+days = 14
+
+[notify]
+min_runs = 10
+```
+
+Precedence, highest first: command-line flag, environment variable (`FLAKTOR_DB`, `FLAKTOR_WEBHOOK_URL`), `.flaktorrc`, built-in default. Unknown commands or options in the file are reported as errors rather than silently ignored. Webhook URLs are secrets, so prefer the environment variable over committing one to a shared `.flaktorrc`. Run `flaktor config` to see which file is active.
 
 ## MCP Server (for AI coding agents)
 

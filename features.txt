@@ -1,6 +1,5 @@
 Potential next features to consider:
 
-Config file support - .flaktorrc for default settings
 
 
 Quick Actions to Release
