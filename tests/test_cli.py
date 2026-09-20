@@ -815,6 +815,83 @@ class TestTrendCommand:
         assert "No trend data" in result.stdout
 
 
+class TestPerfCommand:
+    """Tests for the perf command."""
+
+    def _upload_at(
+        self, db_path: Path, tmp_path: Path, name: str, duration: float, days_ago: int, seq: int
+    ):
+        """Upload a passing result for `name` with the given duration, `days_ago` days back."""
+        timestamp = (datetime.now() - timedelta(days=days_ago)).isoformat(timespec="seconds")
+        xml_file = tmp_path / f"{name}-{seq}.xml"
+        xml_file.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
+        <testsuite name="s" tests="1" failures="0" timestamp="{timestamp}">
+            <testcase name="{name}" classname="T" time="{duration}"></testcase>
+        </testsuite>
+        """)
+        runner.invoke(app, ["upload", str(xml_file), "--db", str(db_path)])
+
+    def _seed(self, db_path: Path, tmp_path: Path, name: str, prev: float, cur: float):
+        for i in range(5):
+            self._upload_at(db_path, tmp_path, name, prev, 31 + i, i)
+            self._upload_at(db_path, tmp_path, name, cur, i, 100 + i)
+
+    def test_perf_database_not_initialized(self, tmp_path: Path):
+        """Test perf with uninitialized database."""
+        result = runner.invoke(app, ["perf", "--db", str(tmp_path / "uninit.db")])
+
+        assert result.exit_code == 1
+        assert "Database not initialized" in result.stdout
+
+    def test_perf_no_data(self, initialized_db: Path):
+        """Test perf on an empty database."""
+        result = runner.invoke(app, ["perf", "--db", str(initialized_db)])
+
+        assert result.exit_code == 0
+        assert "No performance data" in result.stdout
+
+    def test_perf_detects_slowdown(self, initialized_db: Path, tmp_path: Path):
+        """Test that a test which got slower shows as slower with its change."""
+        self._seed(initialized_db, tmp_path, "test_x", prev=1.0, cur=2.0)
+
+        result = runner.invoke(
+            app, ["perf", "--db", str(initialized_db), "--min-runs", "5"]
+        )
+
+        assert result.exit_code == 0
+        assert "T.test_x" in result.stdout
+        assert "slower" in result.stdout
+        assert "+1.00s" in result.stdout
+        assert "+100%" in result.stdout
+
+    def test_perf_slower_only_filter(self, initialized_db: Path, tmp_path: Path):
+        """Test --slower-only hides stable tests and keeps slowed ones."""
+        self._seed(initialized_db, tmp_path, "test_same", prev=1.0, cur=1.0)
+        self._seed(initialized_db, tmp_path, "test_slow", prev=1.0, cur=2.0)
+
+        result = runner.invoke(
+            app,
+            ["perf", "--db", str(initialized_db), "--min-runs", "5", "--slower-only"],
+        )
+
+        assert result.exit_code == 0
+        assert "T.test_slow" in result.stdout
+        assert "T.test_same" not in result.stdout
+
+    def test_perf_threshold_option(self, initialized_db: Path, tmp_path: Path):
+        """Test --threshold raises the bar for what counts as slower."""
+        self._seed(initialized_db, tmp_path, "test_x", prev=1.0, cur=2.0)
+
+        result = runner.invoke(
+            app,
+            ["perf", "--db", str(initialized_db), "--min-runs", "5", "--threshold", "150"],
+        )
+
+        assert result.exit_code == 0
+        assert "stable" in result.stdout
+        assert "slower" not in result.stdout
+
+
 class TestNotifyCommand:
     """Tests for the notify command."""
 

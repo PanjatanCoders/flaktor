@@ -619,6 +619,125 @@ class TestGetTrendingTests:
         assert trends[0]["test_name"] == "test_worse"
 
 
+class TestGetDurationTrends:
+    """Tests for test duration trend detection."""
+
+    def _insert_result(
+        self,
+        db: Database,
+        test_name: str,
+        duration: float,
+        days_ago: int,
+        run_id: str,
+        status: TestStatus = TestStatus.PASSED,
+    ):
+        timestamp = datetime.now() - timedelta(days=days_ago)
+        db.insert_test_run(TestRun(run_id=run_id, timestamp=timestamp))
+        db.insert_test_results([
+            TestResult(
+                test_name=test_name,
+                status=status,
+                duration=duration,
+                run_id=run_id,
+                timestamp=timestamp,
+            )
+        ])
+
+    def _seed(self, db: Database, name: str, prev: float, cur: float, n: int = 5):
+        for i in range(n):
+            self._insert_result(db, name, prev, 31 + i, f"{name}-prev-{i}")
+            self._insert_result(db, name, cur, i, f"{name}-cur-{i}")
+
+    def test_detects_slower_test(self, initialized_db: Database):
+        """Test a test that got much slower is flagged."""
+        self._seed(initialized_db, "test_a", prev=1.0, cur=2.0)
+
+        trends = initialized_db.get_duration_trends(days=30, min_runs=5)
+
+        assert len(trends) == 1
+        assert trends[0]["trend"] == "slower"
+        assert trends[0]["duration_delta"] == 1.0
+        assert trends[0]["duration_change_pct"] == 1.0
+
+    def test_detects_faster_test(self, initialized_db: Database):
+        """Test a test that got much faster is flagged."""
+        self._seed(initialized_db, "test_b", prev=2.0, cur=1.0)
+
+        trends = initialized_db.get_duration_trends(days=30, min_runs=5)
+
+        assert trends[0]["trend"] == "faster"
+        assert trends[0]["duration_delta"] < 0
+
+    def test_small_relative_change_is_stable(self, initialized_db: Database):
+        """Test a change below the relative threshold is stable."""
+        self._seed(initialized_db, "test_c", prev=10.0, cur=11.0)
+
+        trends = initialized_db.get_duration_trends(days=30, min_runs=5, threshold=0.25)
+
+        assert trends[0]["trend"] == "stable"
+
+    def test_tiny_absolute_change_is_stable(self, initialized_db: Database):
+        """Test a large relative but tiny absolute change is ignored as noise."""
+        self._seed(initialized_db, "test_d", prev=0.002, cur=0.004)
+
+        trends = initialized_db.get_duration_trends(days=30, min_runs=5)
+
+        assert trends[0]["trend"] == "stable"
+
+    def test_new_test_has_no_previous_window(self, initialized_db: Database):
+        """Test a test with only current-window data is marked new."""
+        for i in range(5):
+            self._insert_result(initialized_db, "test_new", 1.0, i, f"cur-{i}")
+
+        trends = initialized_db.get_duration_trends(days=30, min_runs=5)
+
+        assert trends[0]["trend"] == "new"
+        assert trends[0]["duration_delta"] is None
+        assert trends[0]["previous"] is None
+
+    def test_respects_min_runs(self, initialized_db: Database):
+        """Test that tests below min_runs are excluded."""
+        self._seed(initialized_db, "test_few", prev=1.0, cur=2.0, n=2)
+
+        assert initialized_db.get_duration_trends(days=30, min_runs=5) == []
+
+    def test_ignores_failed_and_skipped_runs(self, initialized_db: Database):
+        """Test that only passed runs contribute to the average."""
+        self._seed(initialized_db, "test_e", prev=1.0, cur=1.0)
+        for i in range(5):
+            self._insert_result(
+                initialized_db, "test_e", 60.0, i, f"fail-{i}", TestStatus.FAILED
+            )
+            self._insert_result(
+                initialized_db, "test_e", 0.0, i, f"skip-{i}", TestStatus.SKIPPED
+            )
+
+        trends = initialized_db.get_duration_trends(days=30, min_runs=5)
+
+        assert trends[0]["trend"] == "stable"
+        assert trends[0]["current"]["avg_duration"] == 1.0
+        assert trends[0]["current"]["runs"] == 5
+
+    def test_slower_only_filter(self, initialized_db: Database):
+        """Test slower_only excludes stable/faster/new tests."""
+        self._seed(initialized_db, "test_slow", prev=1.0, cur=2.0)
+        self._seed(initialized_db, "test_fast", prev=2.0, cur=1.0)
+        self._seed(initialized_db, "test_same", prev=1.0, cur=1.0)
+
+        trends = initialized_db.get_duration_trends(days=30, min_runs=5, slower_only=True)
+
+        assert [t["test_name"] for t in trends] == ["test_slow"]
+
+    def test_sorted_biggest_slowdown_first(self, initialized_db: Database):
+        """Test results are ordered by absolute slowdown, descending."""
+        self._seed(initialized_db, "test_mild", prev=1.0, cur=1.5)
+        self._seed(initialized_db, "test_severe", prev=1.0, cur=5.0)
+
+        trends = initialized_db.get_duration_trends(days=30, min_runs=5)
+
+        assert [t["test_name"] for t in trends] == ["test_severe", "test_mild"]
+
+
 class TestFlakyAlerts:
     """Tests for flaky-test alert state (used by webhook notifications)."""
 

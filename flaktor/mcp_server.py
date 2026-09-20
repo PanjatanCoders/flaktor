@@ -135,6 +135,35 @@ def build_server(db_path: Path) -> MCPServer:
             )
 
     @server.tool()
+    def list_duration_trends(
+        days: int = 30,
+        min_runs: int = 3,
+        threshold: float = 0.25,
+        min_delta: float = 0.05,
+        slower_only: bool = False,
+    ) -> list[dict]:
+        """
+        Show average-duration trend per test (passed runs only): current
+        window vs the prior window of equal length. Useful for spotting
+        tests that have recently slowed down.
+
+        Args:
+            days: Size of each comparison window, in days.
+            min_runs: Minimum passed runs (in each window) for a test to be evaluated.
+            threshold: Minimum relative change to count as slower/faster (0.25 = 25%).
+            min_delta: Minimum absolute change in seconds to count as slower/faster.
+            slower_only: Only return tests that got slower.
+        """
+        with Database(db_path) as db:
+            return db.get_duration_trends(
+                days=days,
+                min_runs=min_runs,
+                threshold=threshold,
+                min_delta=min_delta,
+                slower_only=slower_only,
+            )
+
+    @server.tool()
     def get_test_history(test_name: str, limit: int = 30) -> list[dict]:
         """
         Get recent pass/fail history for a specific test, newest first.

@@ -58,6 +58,7 @@ flaktor report
 | `flaktor export --output <file>` | Export test data to JSON or CSV |
 | `flaktor compare <branch-a> <branch-b>` | Compare flakiness between two branches |
 | `flaktor trend` | Show flakiness trends over time (improving/worsening) |
+| `flaktor perf` | Show test duration trends and detect slowdowns |
 | `flaktor notify` | Send a webhook alert for newly detected flaky tests |
 | `flaktor clean` | Remove old data from the database |
 | `flaktor info` | Show database information |
@@ -118,7 +119,7 @@ Add it to your MCP client config, e.g. for Claude Code:
 claude mcp add flaktor -- flaktor mcp
 ```
 
-Available tools: `list_flaky_tests`, `check_test_flakiness`, `list_quarantined_tests`, `list_tags`, `list_tests_by_tag`, `list_trending_tests`, `get_test_history`, `get_test_summary`, `get_database_stats`.
+Available tools: `list_flaky_tests`, `check_test_flakiness`, `list_quarantined_tests`, `list_tags`, `list_tests_by_tag`, `list_trending_tests`, `list_duration_trends`, `get_test_history`, `get_test_summary`, `get_database_stats`.
 
 ## Understanding Flakiness
 

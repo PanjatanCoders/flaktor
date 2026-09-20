@@ -1,6 +1,5 @@
 Potential next features to consider:
 
-Performance tracking - Track test duration trends, detect slowdowns
 Config file support - .flaktorrc for default settings
 
 

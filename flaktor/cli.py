@@ -2141,6 +2141,161 @@ def trend(
 
 
 @app.command()
+def perf(
+    db_path: Optional[Path] = typer.Option(
+        None,
+        "--db",
+        "-d",
+        help="Database path (default: auto-detect)"
+    ),
+    days: int = typer.Option(
+        30,
+        "--days",
+        help="Size of each comparison window, in days"
+    ),
+    min_runs: int = typer.Option(
+        3,
+        "--min-runs",
+        help="Minimum passed runs (in each window) for a test to be shown"
+    ),
+    threshold: float = typer.Option(
+        25.0,
+        "--threshold",
+        help="Minimum change in average duration (percent) to count as slower/faster"
+    ),
+    min_delta: float = typer.Option(
+        0.05,
+        "--min-delta",
+        help="Minimum change in average duration (seconds) to count as slower/faster"
+    ),
+    slower_only: bool = typer.Option(
+        False,
+        "--slower-only",
+        help="Show only tests that got slower"
+    ),
+    limit: int = typer.Option(
+        50,
+        "--limit",
+        "-n",
+        help="Maximum number of tests to display"
+    ),
+):
+    """
+    ⏱️  Show test duration trends and detect slowdowns.
+
+    Compares each test's average duration (passed runs only) in the last
+    `--days` days against the `--days` days before that. A test counts as
+    slower or faster only if it moved by at least `--threshold` percent and
+    `--min-delta` seconds, so noise on very fast tests is ignored.
+
+    Examples:
+        # Duration trends over the last 30 vs previous 30 days
+        $ flaktor perf
+
+        # Only show tests that got slower
+        $ flaktor perf --slower-only
+
+        # Flag anything 50% slower, using weekly windows
+        $ flaktor perf --days 7 --threshold 50
+    """
+    if db_path is None:
+        db_path = get_default_db_path()
+
+    if not ensure_database_exists(db_path):
+        console.print(
+            Panel.fit(
+                "[bold red]❌ Database not initialized[/bold red]\n\n"
+                f"💡 Run first: [yellow]flaktor init[/yellow]",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        with Database(db_path) as db:
+            rows = db.get_duration_trends(
+                days=days,
+                min_runs=min_runs,
+                threshold=threshold / 100,
+                min_delta=min_delta,
+                slower_only=slower_only,
+            )
+
+        if not rows:
+            console.print()
+            console.print(
+                Panel.fit(
+                    f"[green]No performance data[/green]\n\n"
+                    f"No tests with at least {min_runs} passed run(s) in both the last "
+                    f"{days} days and the {days} days before that"
+                    + (" that got slower" if slower_only else "") + ".",
+                    border_style="green",
+                    title="Nothing to Show"
+                )
+            )
+            return
+
+        rows = rows[:limit]
+
+        table = Table(title=f"Duration Trend ({days}-day windows)")
+        table.add_column("Test Name", style="cyan", no_wrap=False)
+        table.add_column("Trend", justify="center")
+        table.add_column("Avg Duration\n(prev → now)", justify="right")
+        table.add_column("Change", justify="right")
+        table.add_column("Runs\n(prev/now)", justify="right")
+
+        trend_display = {
+            "slower": "[red]🐢 slower[/red]",
+            "faster": "[green]🐇 faster[/green]",
+            "stable": "[dim]➡ stable[/dim]",
+            "new": "[cyan]✨ new[/cyan]",
+        }
+
+        for row in rows:
+            cur = row["current"]
+            prev = row["previous"]
+
+            if prev:
+                duration_display = f"{prev['avg_duration']:.2f}s → {cur['avg_duration']:.2f}s"
+                runs_display = f"{prev['runs']}/{cur['runs']}"
+                delta = row["duration_delta"]
+                pct = row["duration_change_pct"]
+                change_display = f"{delta:+.2f}s"
+                if pct is not None:
+                    change_display += f" ({pct*100:+.0f}%)"
+            else:
+                duration_display = f"[dim]-[/dim] → {cur['avg_duration']:.2f}s"
+                runs_display = f"[dim]-[/dim]/{cur['runs']}"
+                change_display = "[dim]-[/dim]"
+
+            table.add_row(
+                _truncate_test_name(row["test_name"]),
+                trend_display.get(row["trend"], row["trend"]),
+                duration_display,
+                change_display,
+                runs_display,
+            )
+
+        console.print()
+        console.print(table)
+        console.print()
+
+        if len(rows) == limit:
+            console.print(f"[dim]Showing {limit} results. Use --limit to see more.[/dim]")
+
+    except DatabaseError as e:
+        console.print(
+            Panel.fit(
+                f"[bold red]❌ Database error[/bold red]\n\n{str(e)}",
+                border_style="red",
+                title="Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+
+@app.command()
 def notify(
     db_path: Optional[Path] = typer.Option(
         None,

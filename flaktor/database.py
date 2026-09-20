@@ -853,6 +853,110 @@ class Database:
         results.sort(key=lambda r: (r["flip_rate_delta"] is None, -(r["flip_rate_delta"] or 0)))
         return results
 
+    def _get_window_durations(self, since_days: int, until_days: int = 0) -> dict:
+        """
+        Get per-test average duration and run count for passed results
+        within a days-ago window.
+
+        Only passed results count: skipped tests report ~0s, and failures
+        often exit early or hit a timeout, so either would distort the
+        average. Bounds are computed in Python for the same local-time
+        reason as get_test_window_stats().
+        """
+        now = datetime.now()
+        since_cutoff = (now - timedelta(days=since_days)).isoformat()
+        until_cutoff = (now - timedelta(days=until_days)).isoformat()
+
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT test_name, COUNT(*), AVG(duration)
+            FROM test_results
+            WHERE status = 'passed' AND timestamp >= ? AND timestamp < ?
+            GROUP BY test_name
+        """, (since_cutoff, until_cutoff))
+
+        return {
+            test_name: {"runs": runs, "avg_duration": round(avg, 3)}
+            for test_name, runs, avg in cursor.fetchall()
+        }
+
+    def get_duration_trends(
+        self,
+        days: int = 30,
+        min_runs: int = 3,
+        threshold: float = 0.25,
+        min_delta: float = 0.05,
+        slower_only: bool = False,
+    ) -> List[dict]:
+        """
+        Compare each test's average duration in the current window against
+        the prior window of equal length, to surface slowdowns.
+
+        A test is "slower"/"faster" only when its average moved by at least
+        `threshold` (relative) AND at least `min_delta` seconds (absolute),
+        so a 2ms -> 4ms change on a trivial test isn't reported as a 100%
+        slowdown.
+
+        Args:
+            days: Size of each comparison window, in days
+            min_runs: Minimum passed runs (in each window) for a test to be evaluated
+            threshold: Minimum relative change to count as slower/faster (0.25 = 25%)
+            min_delta: Minimum absolute change in seconds to count as slower/faster
+            slower_only: If True, only return tests that got slower
+
+        Returns:
+            List of dicts with test_name, trend ("slower"/"faster"/"stable"/
+            "new"), duration_delta and duration_change_pct (both None for new
+            tests; pct is also None if the previous average was 0), and the
+            current/previous window stats. Sorted biggest slowdown first.
+        """
+        if not self.conn:
+            raise DatabaseError("Database not connected.")
+
+        current = self._get_window_durations(since_days=days, until_days=0)
+        previous = self._get_window_durations(since_days=days * 2, until_days=days)
+
+        results = []
+        for test_name, cur in current.items():
+            if cur["runs"] < min_runs:
+                continue
+
+            prev = previous.get(test_name)
+            if prev and prev["runs"] >= min_runs:
+                delta = round(cur["avg_duration"] - prev["avg_duration"], 3)
+                pct = round(delta / prev["avg_duration"], 3) if prev["avg_duration"] > 0 else None
+                significant = abs(delta) >= min_delta and (pct is None or abs(pct) >= threshold)
+                if significant and delta > 0:
+                    trend = "slower"
+                elif significant and delta < 0:
+                    trend = "faster"
+                else:
+                    trend = "stable"
+            else:
+                prev = None
+                delta = None
+                pct = None
+                trend = "new"
+
+            if slower_only and trend != "slower":
+                continue
+
+            results.append({
+                "test_name": test_name,
+                "trend": trend,
+                "duration_delta": delta,
+                "duration_change_pct": pct,
+                "current": cur,
+                "previous": prev,
+            })
+
+        results.sort(key=lambda r: (
+            r["duration_delta"] is None,
+            -(r["duration_delta"] or 0),
+            -r["current"]["avg_duration"],
+        ))
+        return results
+
     def quarantine_test(self, test_name: str, reason: Optional[str] = None) -> None:
         """
         Mark a test as quarantined.
