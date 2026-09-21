@@ -27,6 +27,10 @@ All notable changes to Flaktor are documented here. The format follows
 - `tomli` is now a dependency on Python 3.10 (Python 3.11+ uses the standard library's `tomllib`).
 - `flaktor --version` now reads the version from the package instead of a hardcoded string.
 
+### Fixed
+
+- Cleaned up project metadata for a publishable release: the license is now declared with SPDX syntax and the build metadata no longer emits the deprecated setuptools warnings for the `project.license` table.
+
 ## [0.1.0] - 2026-09-14
 
 Initial public release: JUnit XML, Cucumber/BDD and Playwright result parsing,

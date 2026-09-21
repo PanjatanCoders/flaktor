@@ -129,15 +129,54 @@ Precedence, highest first: command-line flag, environment variable (`FLAKTOR_DB`
 
 Flaktor can expose its flaky-test data to AI coding agents (Claude Code, Cursor, etc.) over the [Model Context Protocol](https://modelcontextprotocol.io), so an agent can check whether a failing test is a known flake *before* debugging it as a real bug. The server is read-only — `upload`, `init`, and `clean` stay CLI-only.
 
+No VS Code extension is required. Flaktor ships as a standard Python MCP server that connects through your MCP client.
+
 ```bash
 pip install "flaktor[mcp]"
 ```
 
-Add it to your MCP client config, e.g. for Claude Code:
+Then either run it directly:
+
+```bash
+flaktor mcp
+```
+
+Or add it to your MCP client config:
+
+### Claude Code
 
 ```bash
 claude mcp add flaktor -- flaktor mcp
 ```
+
+### Cursor
+
+```json
+{
+  "mcpServers": {
+    "flaktor": {
+      "command": "flaktor",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### VS Code
+
+```json
+{
+  "servers": {
+    "flaktor": {
+      "type": "stdio",
+      "command": "flaktor",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+If your client expects a config file instead of a JSON snippet, the important part is the same: run `flaktor mcp` as a stdio MCP server.
 
 Available tools: `list_flaky_tests`, `check_test_flakiness`, `list_quarantined_tests`, `list_tags`, `list_tests_by_tag`, `list_trending_tests`, `list_duration_trends`, `get_test_history`, `get_test_summary`, `get_database_stats`.
 
