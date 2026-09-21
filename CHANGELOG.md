@@ -4,6 +4,18 @@ All notable changes to Flaktor are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-09-21
+
+### Added
+
+- Documented the MCP installation path and client configuration for Claude Code, Cursor, and VS Code.
+- Added release and MCP setup guides to the repository docs for easier onboarding and package publication.
+
+### Fixed
+
+- Clarified that Flaktor ships as a Python MCP server and does not require a VS Code extension.
+- Updated package metadata to use modern SPDX license metadata so release builds remain clean.
+
 ## [0.2.0] - 2026-09-20
 
 ### Added
